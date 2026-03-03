@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="340" viewBox="0 0 980 340" role="img" aria-labelledby="title desc">
+  <title id="title">reap-mlx observation engine flow</title>
+  <desc id="desc">Telemetry input is validated, scored, planned, and written while observation events are streamed and summarized.</desc>
+  <defs>
+    <style>
+      .bg { fill: #0f172a; }
+      .card { fill: #111827; stroke: #334155; stroke-width: 2; rx: 12; }
+      .accent { fill: #1d4ed8; }
+      .text { fill: #e5e7eb; font-family: Menlo, Monaco, Consolas, monospace; font-size: 15px; }
+      .small { fill: #93c5fd; font-family: Menlo, Monaco, Consolas, monospace; font-size: 13px; }
+      .arrow { stroke: #60a5fa; stroke-width: 3; marker-end: url(#head); }
+      .line { stroke: #334155; stroke-width: 1; }
+    </style>
+    <marker id="head" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#60a5fa" />
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="340" class="bg" />
+
+  <rect x="30" y="70" width="170" height="92" class="card" />
+  <text x="45" y="102" class="text">1) Telemetry JSON</text>
+  <text x="45" y="126" class="small">model + expert signals</text>
+
+  <rect x="230" y="70" width="180" height="92" class="card" />
+  <text x="245" y="102" class="text">2) Validation</text>
+  <text x="245" y="126" class="small">bounds, schema, dupes</text>
+
+  <rect x="440" y="70" width="190" height="92" class="card" />
+  <text x="455" y="102" class="text">3) Score + Plan</text>
+  <text x="455" y="126" class="small">layer-safe pruning</text>
+
+  <rect x="660" y="70" width="160" height="92" class="card" />
+  <text x="675" y="102" class="text">4) Outputs</text>
+  <text x="675" y="126" class="small">plan + log files</text>
+
+  <rect x="230" y="208" width="420" height="92" class="card accent" />
+  <text x="248" y="242" class="text">Observation engine</text>
+  <text x="248" y="266" class="small">records stage, duration, level, progress, and metadata for every step</text>
+
+  <line x1="200" y1="116" x2="230" y2="116" class="arrow" />
+  <line x1="410" y1="116" x2="440" y2="116" class="arrow" />
+  <line x1="630" y1="116" x2="660" y2="116" class="arrow" />
+
+  <line x1="320" y1="162" x2="320" y2="208" class="arrow" />
+  <line x1="535" y1="162" x2="535" y2="208" class="arrow" />
+  <line x1="740" y1="162" x2="650" y2="208" class="arrow" />
+
+  <line x1="30" y1="40" x2="950" y2="40" class="line" />
+  <text x="30" y="28" class="small">reap-mlx | secure local CLI with observation-first execution</text>
+</svg>
