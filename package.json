@@ -1,0 +1,37 @@
+{
+  "name": "reap-mlx",
+  "version": "0.1.0",
+  "description": "Secure REAP-MLX CLI with a local observation engine",
+  "type": "module",
+  "bin": {
+    "reap-mlx": "dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md",
+    "HOWTO.md"
+  ],
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && vitest run",
+    "verify": "pnpm lint && pnpm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "reap",
+    "mlx",
+    "cli",
+    "observation",
+    "security"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}
