@@ -1,17 +1,60 @@
 # How to use reap-mlx
 
-This guide shows a complete local workflow.
+Complete local workflow from build to pruned model.
 
-## 1) Build the CLI
+## Build
 
 ```bash
 pnpm install
 pnpm build
 ```
 
-## 2) Create telemetry input
+## Option A: Real model
 
-Use `init` for a synthetic dataset:
+Collect telemetry from a local MLX MoE model:
+
+```bash
+node dist/cli/index.js collect \
+  --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
+  --output ./tmp \
+  --prompt "Explain sparse MoE routing in one sentence." \
+  --max-tokens 64 \
+  --layers 0-3
+```
+
+Build pruning plan from that telemetry:
+
+```bash
+node dist/cli/index.js run \
+  --model ./tmp/telemetry-*.json \
+  --output ./tmp/plan \
+  --ratio 0.05 \
+  --min-experts 1 \
+  --no-legacy
+```
+
+Apply the plan to the checkpoint:
+
+```bash
+node dist/cli/index.js apply \
+  --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
+  --plan ./tmp/plan/pruning-plan.json \
+  --output ./tmp/pruned-model
+```
+
+Validate before writing (dry run):
+
+```bash
+node dist/cli/index.js apply \
+  --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
+  --plan ./tmp/plan/pruning-plan.json \
+  --output ./tmp/pruned-model \
+  --dry-run
+```
+
+## Option B: Synthetic telemetry (no model needed)
+
+Generate fake telemetry for testing:
 
 ```bash
 node dist/cli/index.js init \
@@ -22,19 +65,7 @@ node dist/cli/index.js init \
   --seed 2026
 ```
 
-Or provide your own telemetry JSON in this shape:
-
-```json
-{
-  "modelName": "your-model",
-  "experts": [
-    { "layer": 0, "expert": 0, "activationScore": 0.31, "tokenCount": 924 },
-    { "layer": 0, "expert": 1, "activationScore": 0.95, "tokenCount": 1804 }
-  ]
-}
-```
-
-## 3) Run pruning planner
+Run the planner on it:
 
 ```bash
 node dist/cli/index.js run \
@@ -44,28 +75,18 @@ node dist/cli/index.js run \
   --calibration 3
 ```
 
-Optional flags:
+## Inspect observation log
 
-- `--job-id <id>`: set your own job id
-- `--observation <filename>`: custom log name under output dir
-- `--json`: emit full plan JSON to stdout
-
-## 4) Read observation summary
+Every `run` writes a JSONL log. Summarize it:
 
 ```bash
-node dist/cli/index.js observe --file ./examples/out/observation.log --json
+node dist/cli/index.js observe --file ./examples/out/observation.log
 ```
 
-You get totals for event count, malformed lines, level counts, stage counts, and stage durations.
+Add `--json` for machine-readable output.
 
-## 5) Validate package before release
+## Verify everything works
 
 ```bash
 pnpm verify
 ```
-
-## Notes
-
-- `--ratio` is capped at `0.95`
-- `--calibration` range is `1..25`
-- The planner always preserves at least one expert per layer
