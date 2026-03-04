@@ -1,14 +1,22 @@
 # reap-mlx
 
-REAP expert pruning for MLX models. Collect routing telemetry from a running model, build a pruning plan using REAP saliency, and structurally remove experts from the checkpoint.
+Port of [Cerebras REAP](https://arxiv.org/abs/2510.13999) (Router-weighted Expert Activation Pruning) to Apple Silicon. Prune experts from Mixture-of-Experts LLMs locally on your Mac using [MLX](https://github.com/ml-explore/mlx) -- no CUDA required.
 
-Three commands do the work:
+The original REAP paper and [reference implementation](https://github.com/CerebrasResearch/reap) target multi-GPU setups (A100/H100). This tool does the same thing on a MacBook: collect routing telemetry from an MLX model, score experts by the REAP saliency criterion, and structurally remove the lowest-scoring ones from the checkpoint.
+
+## Pipeline
 
 ```
 collect  →  run  →  apply
 ```
 
-`collect` runs a forward pass through your MLX MoE model and records per-expert gate values and activation norms. `run` reads that telemetry, scores experts by saliency, and writes a pruning plan. `apply` slices the pruned experts out of the checkpoint and saves a smaller model.
+**collect** runs a forward pass through an MLX MoE model and records per-expert gate values and activation norms. **run** reads that telemetry, scores experts, and writes a pruning plan. **apply** slices the pruned experts out of the checkpoint and saves a smaller model.
+
+## Requirements
+
+- macOS on Apple Silicon (M1/M2/M3/M4)
+- Node 20+, pnpm
+- Python 3.11+ with `mlx` and `mlx_lm` installed
 
 ## Quick start
 
@@ -16,7 +24,7 @@ collect  →  run  →  apply
 pnpm install && pnpm build
 ```
 
-Collect telemetry from a local MLX model:
+Collect routing telemetry from a local MoE model:
 
 ```bash
 node dist/cli/index.js collect \
@@ -26,7 +34,7 @@ node dist/cli/index.js collect \
   --layers 0-3
 ```
 
-Build a pruning plan at 5% ratio:
+Build a pruning plan (prune 5% of experts per layer):
 
 ```bash
 node dist/cli/index.js run \
@@ -45,73 +53,25 @@ node dist/cli/index.js apply \
   --output ./tmp/pruned-model
 ```
 
-## How saliency works
+Use `--dry-run` on `apply` to validate the plan without writing files.
 
-Each expert gets a score based on how much routing weight it receives and how large its output activations are. The primary metric is:
+## How saliency scoring works
 
-```
-saliency = mean(g_j(x) * ||f_j(x)||)
-```
-
-where `g_j(x)` is the gating weight and `||f_j(x)||` is the L2 norm of the expert output, averaged over active tokens. This follows the REAP paper's formulation.
-
-When `weightedActivationNormSum` is missing from telemetry, the scorer falls back to:
-
-1. `averageGateValue * averageActivationNorm`
-2. `(gateValueSum / activeTokenCount) * (activationNormSum / activeTokenCount)`
-3. `activationScore` (legacy, disabled with `--no-legacy`)
-
-Experts are ranked ascending by saliency. The lowest-scoring ones get pruned.
-
-## Per-layer pruning
-
-Pruning happens per layer, not globally. For each layer:
+Each expert gets a score:
 
 ```
-pruneCount = min(
-  floor(numExperts * targetRatio),
-  numExperts - minExpertsPerLayer
-)
+saliency_j = mean(g_j(x) * ||f_j(x)||)
 ```
 
-This keeps at least `--min-experts` (default 1) alive in every layer, so no layer goes completely dead.
+`g_j(x)` is the softmax gating weight for expert j on input x. `||f_j(x)||` is the L2 norm of expert j's output. The mean is taken over tokens that were actually routed to that expert. This matches the Cerebras REAP paper's formulation -- experts that receive low routing weight and produce small activations are pruned first.
 
-## Telemetry format
+The `collect` command captures `weightedActivationNormSum` (the numerator) and `activeTokenCount` (the denominator) per expert. When those fields are missing, the scorer falls back to `averageGateValue * averageActivationNorm`, or to raw `activationScore` if `--no-legacy` is not set.
 
-The collector outputs JSON with this structure:
-
-```json
-{
-  "modelName": "qwen1.5-moe-a2.7b-chat-4bit",
-  "experts": [
-    {
-      "layer": 0,
-      "expert": 3,
-      "activeTokenCount": 42,
-      "gateValueSum": 9.33,
-      "activationNormSum": 18.71,
-      "weightedActivationNormSum": 3.91,
-      "averageGateValue": 0.2221,
-      "averageActivationNorm": 0.4455,
-      "activationScore": 0.0931
-    }
-  ],
-  "metadata": {
-    "source": "mlx_real_collector_exact",
-    "selectedLayers": "0,1,2,3",
-    "topK": 4,
-    "renormTopK": false
-  }
-}
-```
-
-The minimum fields `run` needs in strict mode (`--no-legacy`) are `layer`, `expert`, `activeTokenCount`, and `weightedActivationNormSum`.
+Pruning is per-layer, not global. Each layer has at least `--min-experts` (default 1) experts kept alive.
 
 ## Commands
 
 ### collect
-
-Runs a forward pass through an MLX MoE model and captures per-expert routing statistics.
 
 ```
 --model <dir>         Local MLX model directory
@@ -125,36 +85,32 @@ Runs a forward pass through an MLX MoE model and captures per-expert routing sta
 
 ### run
 
-Reads telemetry, scores saliency, and writes a pruning plan.
-
 ```
 --model <file>        Telemetry JSON from collect
 --output <dir>        Output directory for plan + observation log
---ratio <0..0.95>     Target prune ratio
+--ratio <0..0.95>     Target prune ratio per layer
 --calibration <1..25> Calibration rounds (default: 2)
 --min-experts <n>     Min experts kept per layer (default: 1)
---no-legacy           Require REAP saliency fields, disable activationScore fallback
---json                Print full plan to stdout
+--no-legacy           Require REAP saliency fields, reject activationScore fallback
+--json                Print plan to stdout
 ```
 
 ### apply
-
-Structurally removes pruned experts from an MLX checkpoint.
 
 ```
 --model <dir>         Source MLX model directory
 --plan <file>         Pruning plan JSON from run
 --output <dir>        Output pruned model directory
---dry-run             Validate the plan without writing files
+--dry-run             Validate without writing
 ```
 
 ### observe
 
-Parses the JSONL observation log from a run and prints a summary.
+Parses the JSONL observation log from a `run` and prints timing/stage summary.
 
 ```
 --file <path>         Observation log file
---json                Output as JSON
+--json                Machine-readable output
 ```
 
 ### init
@@ -169,34 +125,24 @@ Generates synthetic telemetry for testing without a real model.
 --seed <int>          RNG seed
 ```
 
-## Observation log
+## Supported architectures
 
-Every `run` writes a JSONL observation log alongside the pruning plan. Each line is a timestamped event with a stage label (`bootstrap`, `load_model`, `validate`, `score_experts`, `plan_pruning`, `write_output`, `complete`) and optional duration.
+Currently supports models using the `switch_mlp` MoE pattern (Qwen MoE, Mixtral-style). Other architectures (DeepSeek V2/V3, Llama 4, GLM MoE) are not yet supported.
 
-Use `observe` to get aggregated counts and timings.
+## Relation to Cerebras REAP
 
-## REAP parity
-
-The saliency computation matches the Cerebras REAP implementation:
-
-- Per-expert `g(x) * ||f(x)||` averaged over active tokens
-- Optional top-k renormalization in the collector
-- Per-layer pruning ratios (not global pooling)
-- Structural checkpoint patching that slices expert-axis tensors
-
-What's not here yet: the full benchmark/eval harness from the Cerebras repo, and support for architectures beyond the `switch_mlp` pattern used by Qwen MoE and similar models.
-
-## Security
-
-- Output writes are path-traversal-guarded
-- Input file reads refuse symlinks
-- Plan and log writes use atomic rename
-- Numeric inputs are bounds-checked
+The Cerebras repo includes expert merging (HC-SMoE, M-SMoE, SubMoE), a full evaluation harness (EvalPlus, LiveCodeBench, WildBench, lm-eval), and support for many architectures. This repo only does pruning, only on MLX, and does not include evaluation. Use the Cerebras repo if you have CUDA GPUs and want the full research pipeline.
 
 ## Development
 
 ```bash
-pnpm verify          # lint + build + test
-pnpm test            # build + run vitest
-pnpm lint            # typecheck only
+pnpm verify    # typecheck + build + test
+pnpm test      # build + vitest
+pnpm lint      # typecheck only
 ```
+
+## References
+
+- Paper: [REAP the Experts: Why Pruning Prevails for One-Shot MoE Compression](https://arxiv.org/abs/2510.13999)
+- Reference implementation: [CerebrasResearch/reap](https://github.com/CerebrasResearch/reap)
+- MLX: [ml-explore/mlx](https://github.com/ml-explore/mlx)

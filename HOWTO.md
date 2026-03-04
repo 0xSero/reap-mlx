@@ -1,6 +1,6 @@
 # How to use reap-mlx
 
-Complete local workflow from build to pruned model.
+End-to-end walkthrough: build the tool, prune a model, inspect the results.
 
 ## Build
 
@@ -9,9 +9,9 @@ pnpm install
 pnpm build
 ```
 
-## Option A: Real model
+## Prune a real model
 
-Collect telemetry from a local MLX MoE model:
+Step 1: Collect routing telemetry. This runs a forward pass and records how each expert behaves.
 
 ```bash
 node dist/cli/index.js collect \
@@ -22,7 +22,7 @@ node dist/cli/index.js collect \
   --layers 0-3
 ```
 
-Build pruning plan from that telemetry:
+Step 2: Build a pruning plan. The ratio is how many experts to prune per layer (0.05 = 5%).
 
 ```bash
 node dist/cli/index.js run \
@@ -33,16 +33,7 @@ node dist/cli/index.js run \
   --no-legacy
 ```
 
-Apply the plan to the checkpoint:
-
-```bash
-node dist/cli/index.js apply \
-  --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
-  --plan ./tmp/plan/pruning-plan.json \
-  --output ./tmp/pruned-model
-```
-
-Validate before writing (dry run):
+Step 3: Apply the plan to the checkpoint. Use `--dry-run` first to sanity-check.
 
 ```bash
 node dist/cli/index.js apply \
@@ -52,9 +43,11 @@ node dist/cli/index.js apply \
   --dry-run
 ```
 
-## Option B: Synthetic telemetry (no model needed)
+If the dry run looks right, run it again without `--dry-run` to write the pruned model.
 
-Generate fake telemetry for testing:
+## Test without a model
+
+Generate synthetic telemetry:
 
 ```bash
 node dist/cli/index.js init \
@@ -75,9 +68,9 @@ node dist/cli/index.js run \
   --calibration 3
 ```
 
-## Inspect observation log
+## Inspect the observation log
 
-Every `run` writes a JSONL log. Summarize it:
+Every `run` writes a JSONL log with timing data for each pipeline stage.
 
 ```bash
 node dist/cli/index.js observe --file ./examples/out/observation.log
@@ -85,7 +78,7 @@ node dist/cli/index.js observe --file ./examples/out/observation.log
 
 Add `--json` for machine-readable output.
 
-## Verify everything works
+## Run the test suite
 
 ```bash
 pnpm verify

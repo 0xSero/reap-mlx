@@ -1,7 +1,7 @@
 {
   "name": "reap-mlx",
   "version": "0.1.0",
-  "description": "Secure REAP-MLX CLI with a local observation engine",
+  "description": "REAP expert pruning for MoE LLMs on Apple Silicon via MLX",
   "type": "module",
   "bin": {
     "reap-mlx": "dist/cli/index.js"
@@ -24,9 +24,10 @@
   "keywords": [
     "reap",
     "mlx",
-    "cli",
-    "observation",
-    "security"
+    "moe",
+    "pruning",
+    "apple-silicon",
+    "quantization"
   ],
   "license": "MIT",
   "devDependencies": {
