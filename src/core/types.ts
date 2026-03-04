@@ -13,14 +13,26 @@ export type ObservationLevel = 'info' | 'warn' | 'error';
 export interface ExpertSignal {
   layer: number;
   expert: number;
-  activationScore: number;
+  activationScore?: number;
   tokenCount?: number;
+  activeTokenCount?: number;
+  averageGateValue?: number;
+  averageActivationNorm?: number;
+  gateValueSum?: number;
+  activationNormSum?: number;
+  weightedActivationNormSum?: number;
 }
+
+export type TelemetryMetadataValue =
+  | string
+  | number
+  | boolean
+  | Record<string, string | number>;
 
 export interface ModelTelemetry {
   modelName: string;
   experts: ExpertSignal[];
-  metadata?: Record<string, string | number | boolean>;
+  metadata?: Record<string, TelemetryMetadataValue>;
 }
 
 export type DecisionReason =
@@ -28,10 +40,18 @@ export type DecisionReason =
   | 'retained_for_layer_safety'
   | 'high_signal_retained';
 
+export type SaliencySource =
+  | 'weighted_activation_sum'
+  | 'mean_gate_x_norm'
+  | 'mean_gate_x_norm_from_sums'
+  | 'legacy_activation_score';
+
 export interface ExpertDecision extends ExpertSignal {
   signal: number;
   rank: number;
   reason: DecisionReason;
+  saliencySource: SaliencySource;
+  activeTokenCount: number;
 }
 
 export interface PruningPlan {
@@ -42,6 +62,9 @@ export interface PruningPlan {
   targetRatio: number;
   achievedRatio: number;
   calibrationRounds: number;
+  saliencyMethod: 'reap';
+  minExpertsPerLayer: number;
+  legacyFallbackUsed: boolean;
   threshold: number;
   stats: {
     totalExperts: number;
@@ -58,6 +81,8 @@ export interface RunConfig {
   outputDir: string;
   targetRatio: number;
   calibrationRounds?: number;
+  minExpertsPerLayer?: number;
+  allowLegacySaliency?: boolean;
   jobId?: string;
   observationPath?: string;
 }

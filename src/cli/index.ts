@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runReapMlx, summarizeObservationLog } from '../core/index.js';
+import {
+  applyPruningPlanToMlxModel,
+  collectTelemetryWithMlx,
+  runReapMlx,
+  summarizeObservationLog
+} from '../core/index.js';
 import {
   assertFiniteNumber,
   assertInteger,
@@ -29,6 +34,8 @@ Usage:
 
 Commands:
   run       Build pruning plan from telemetry JSON
+  collect   Collect REAP telemetry from a real MLX model
+  apply     Apply pruning plan to an MLX checkpoint
   observe   Summarize observation log
   init      Generate synthetic telemetry JSON
   help      Show this help
@@ -39,9 +46,27 @@ run options:
   --output <dir>           Output directory for plan + logs
   --ratio <0..0.95>        Target prune ratio
   --calibration <1..25>    Calibration rounds (default: 2)
+  --min-experts <1..128>   Minimum experts preserved per layer (default: 1)
+  --no-legacy              Require REAP saliency fields (disable activationScore fallback)
   --job-id <id>            Optional job id
   --observation <name>     Observation filename (default: observation.log)
   --json                   Output full result as JSON
+
+collect options:
+  --model <dir>            Local MLX model directory
+  --output <dir>           Output directory for telemetry JSON
+  --prompt <text>          Prompt used to collect routing telemetry
+  --max-tokens <1..8192>   Prompt token cap (default: 256)
+  --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
+  --renorm-topk            Renormalize top-k gate weights to sum to 1
+  --python <bin>           Python binary (default: python3)
+
+apply options:
+  --model <dir>            Source MLX model directory
+  --plan <file>            Pruning plan JSON from reap-mlx run
+  --output <dir>           Output pruned model directory
+  --python <bin>           Python binary (default: python3)
+  --dry-run                Validate and simulate patch without writing model
 
 observe options:
   --file <path>            Observation log file
@@ -230,6 +255,13 @@ async function handleRun(options: CliOptions): Promise<void> {
     typeof calibration === 'string'
       ? assertInteger(calibration, 'calibration', 1, 25)
       : undefined;
+  const minExperts = optionString(options, 'min-experts');
+  const minExpertsPerLayer =
+    typeof minExperts === 'string'
+      ? assertInteger(minExperts, 'min-experts', 1, 128)
+      : undefined;
+
+  const allowLegacySaliency = !optionBoolean(options, 'no-legacy');
 
   const jobId = optionString(options, 'job-id');
   const observationPath = optionString(options, 'observation');
@@ -241,6 +273,8 @@ async function handleRun(options: CliOptions): Promise<void> {
     outputDir,
     targetRatio,
     ...(typeof calibrationRounds === 'number' ? { calibrationRounds } : {}),
+    ...(typeof minExpertsPerLayer === 'number' ? { minExpertsPerLayer } : {}),
+    ...(allowLegacySaliency ? {} : { allowLegacySaliency: false }),
     ...(jobId ? { jobId } : {}),
     ...(observationPath ? { observationPath } : {})
   };
@@ -255,6 +289,60 @@ async function handleRun(options: CliOptions): Promise<void> {
   printRunSummary(plan);
   const outputPlanPath = path.resolve(outputDir, 'pruning-plan.json');
   process.stdout.write(`plan written: ${outputPlanPath}\n`);
+}
+
+async function handleCollect(options: CliOptions): Promise<void> {
+  const modelPath = requiredOption(options, 'model');
+  const outputDir = requiredOption(options, 'output');
+  const prompt = requiredOption(options, 'prompt');
+  const maxTokens = assertInteger(
+    optionString(options, 'max-tokens') ?? 256,
+    'max-tokens',
+    1,
+    8192
+  );
+  const includeLayers = optionString(options, 'layers');
+  const renormTopK = optionBoolean(options, 'renorm-topk');
+  const pythonBin = optionString(options, 'python');
+
+  const result = await collectTelemetryWithMlx({
+    modelPath,
+    outputDir,
+    prompt,
+    maxTokens,
+    ...(includeLayers ? { includeLayers } : {}),
+    ...(renormTopK ? { renormTopK: true } : {}),
+    ...(pythonBin ? { pythonBin } : {})
+  });
+
+  process.stdout.write(`telemetry written: ${result.telemetryPath}\n`);
+  process.stdout.write(`model: ${result.telemetry.modelName}\n`);
+  process.stdout.write(`experts: ${result.telemetry.experts.length}\n`);
+}
+
+async function handleApply(options: CliOptions): Promise<void> {
+  const modelPath = requiredOption(options, 'model');
+  const planPath = requiredOption(options, 'plan');
+  const outputDir = requiredOption(options, 'output');
+  const pythonBin = optionString(options, 'python');
+  const dryRun = optionBoolean(options, 'dry-run');
+
+  await ensureFileReadable(planPath);
+
+  const result = await applyPruningPlanToMlxModel({
+    modelPath,
+    planPath,
+    outputDir,
+    ...(pythonBin ? { pythonBin } : {}),
+    ...(dryRun ? { dryRun: true } : {})
+  });
+
+  process.stdout.write(`output model: ${result.outputModelPath}\n`);
+  process.stdout.write(`output config: ${result.outputConfigPath}\n`);
+  process.stdout.write(`layers patched: ${result.layersPatched}\n`);
+  process.stdout.write(`experts before: ${result.expertsBefore}\n`);
+  process.stdout.write(`experts after: ${result.expertsAfter}\n`);
+  process.stdout.write(`plan job id: ${result.pruningPlanJobId}\n`);
 }
 
 async function handleObserve(options: CliOptions): Promise<void> {
@@ -315,6 +403,14 @@ export async function main(argv = process.argv): Promise<void> {
   switch (parsed.command) {
     case 'run': {
       await handleRun(parsed.options);
+      return;
+    }
+    case 'collect': {
+      await handleCollect(parsed.options);
+      return;
+    }
+    case 'apply': {
+      await handleApply(parsed.options);
       return;
     }
     case 'observe': {

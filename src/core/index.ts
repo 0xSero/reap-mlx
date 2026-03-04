@@ -1,5 +1,19 @@
 export { ObservationEngine } from './ObservationEngine.js';
 export { runReapMlx } from './reapMlx.js';
+export { collectTelemetryWithMlx, type MlxCollectConfig } from './mlxCollector.js';
+export {
+  applyPruningPlanToMlxModel,
+  deriveOutputPlanPath,
+  type MlxApplyPlanConfig,
+  type MlxApplyPlanResult
+} from './mlxPrune.js';
+export {
+  createDefaultReapMlxComponents,
+  type ReapMlxPipelineComponents,
+  type SaliencyScoreResult,
+  type ScoredExpert,
+  type PruningSelection
+} from './reapComponents.js';
 export { summarizeObservationLog } from './observe.js';
 export type {
   ExpertDecision,
@@ -8,5 +22,6 @@ export type {
   ObservationEvent,
   ObservationSummary,
   PruningPlan,
-  RunConfig
+  RunConfig,
+  SaliencySource
 } from './types.js';

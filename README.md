@@ -1,8 +1,12 @@
 # reap-mlx
 
-`reap-mlx` is a local, secure CLI package for building REAP-style pruning plans from MLX telemetry.
+`reap-mlx` is a stackable MLX-first REAP toolkit with three concrete stages:
 
-It reads model expert signals, computes a layer-safe pruning plan, and writes an observation log you can audit after every run.
+1. `collect` real routing telemetry (`g_j(x)`, `||f_j(x)||`, and `g_j(x) * ||f_j(x)||`)
+2. `run` REAP saliency planning
+3. `apply` structural expert pruning on MLX checkpoints
+
+It also emits a full JSONL observation log for every `run`.
 
 ![Observation engine flow](assets/observation-engine.svg)
 
@@ -14,59 +18,183 @@ pnpm build
 node dist/cli/index.js help
 ```
 
-After publishing to npm, the package is intended to run as:
+## REAP alignment status
 
-```bash
-npx reap-mlx help
-```
+Current core behavior is close to Cerebras REAP on the pruning path:
 
-## Quick start
+- REAP saliency uses per-expert mean of `g_j(x) * ||f_j(x)||` over active tokens
+- optional top-k weight renormalization in collector (`--renorm-topk`)
+- per-layer pruning ratio (layer-local `floor(layer_experts * ratio)`)
+- min experts per layer safety floor
+- structural MLX checkpoint patching (`apply`) for selected layers
 
-1) Generate synthetic telemetry
-
-```bash
-node dist/cli/index.js init --output ./tmp/telemetry.json --layers 8 --experts 8 --seed 123
-```
-
-2) Build pruning plan
-
-```bash
-node dist/cli/index.js run --model ./tmp/telemetry.json --output ./tmp/out --ratio 0.4
-```
-
-3) Inspect observation log summary
-
-```bash
-node dist/cli/index.js observe --file ./tmp/out/observation.log
-```
+Remaining deltas vs Cerebras repo are mostly around full benchmark harness and architecture coverage breadth.
 
 ## Commands
 
-- `run`: builds `pruning-plan.json` and `observation.log`
-- `observe`: summarizes observation logs from previous runs
-- `init`: generates synthetic telemetry input for testing
-- `version`, `help`
+- `collect`: extract REAP telemetry from a real MLX model
+- `run`: compute pruning plan from telemetry
+- `apply`: apply pruning plan to MLX checkpoint
+- `observe`: summarize observation log
+- `init`: generate synthetic telemetry for tests
 
-## Security model
+---
 
-- Blocks path traversal when writing output files
-- Refuses symlink reads for model/log input
-- Enforces numeric bounds and schema checks on telemetry
-- Limits input file size during reads
-- Uses atomic file writes for plan and logs
-- Keeps one expert per layer as a safety floor
+## Telemetry contract (what `run` consumes)
 
-## Output files
+Minimal fields per expert for strict REAP mode:
 
-Inside your `--output` directory:
+```json
+{
+  "layer": 0,
+  "expert": 12,
+  "activeTokenCount": 42,
+  "weightedActivationNormSum": 3.91
+}
+```
 
-- `pruning-plan.json` — structured plan with pruned/kept experts and stats
-- `observation.log` — JSONL event stream emitted by the observation engine
+Recommended full fields:
 
-## Development
+```json
+{
+  "layer": 0,
+  "expert": 12,
+  "activeTokenCount": 42,
+  "tokenCount": 42,
+  "gateValueSum": 9.33,
+  "activationNormSum": 18.71,
+  "weightedActivationNormSum": 3.91,
+  "averageGateValue": 0.2221,
+  "averageActivationNorm": 0.4455,
+  "activationScore": 0.0931
+}
+```
+
+`run --no-legacy` enforces REAP saliency fields and disables legacy fallback.
+
+---
+
+## How saliency is computed
+
+Priority order per expert:
+
+1. `weightedActivationNormSum / activeTokenCount` (primary)
+2. `averageGateValue * averageActivationNorm`
+3. `(gateValueSum / activeTokenCount) * (activationNormSum / activeTokenCount)`
+4. legacy fallback (`activationScore`) only if legacy mode is enabled
+
+This score is used to rank experts ascending (lowest = prune first).
+
+---
+
+## Pruning policy
+
+For each layer independently:
+
+- `requested = floor(numExpertsInLayer * targetRatio)`
+- `target = min(requested, numExpertsInLayer - minExpertsPerLayer)`
+- prune lowest-saliency `target` experts
+
+This matches REAP-style layer-local pruning behavior better than global pooling.
+
+---
+
+## Collect telemetry from a real MLX model
 
 ```bash
-pnpm lint
-pnpm test
+node dist/cli/index.js collect \
+  --model /path/to/mlx-model \
+  --output ./tmp \
+  --prompt "Explain sparse MoE routing in one sentence." \
+  --max-tokens 64 \
+  --layers 0-3 \
+  --renorm-topk
+```
+
+Outputs a telemetry JSON file under `--output`.
+
+---
+
+## Build pruning plan
+
+```bash
+node dist/cli/index.js run \
+  --model ./tmp/telemetry-xxxx.json \
+  --output ./tmp/out \
+  --ratio 0.05 \
+  --calibration 2 \
+  --min-experts 1 \
+  --no-legacy
+```
+
+Produces:
+
+- `./tmp/out/pruning-plan.json`
+- `./tmp/out/observation.log`
+
+---
+
+## Apply plan to an MLX checkpoint
+
+```bash
+node dist/cli/index.js apply \
+  --model /path/to/mlx-model \
+  --plan ./tmp/out/pruning-plan.json \
+  --output ./tmp/pruned
+```
+
+Dry-run validation:
+
+```bash
+node dist/cli/index.js apply \
+  --model /path/to/mlx-model \
+  --plan ./tmp/out/pruning-plan.json \
+  --output ./tmp/pruned \
+  --dry-run
+```
+
+---
+
+## Observability
+
+Summarize run events:
+
+```bash
+node dist/cli/index.js observe --file ./tmp/out/observation.log --json
+```
+
+Recorded stages:
+
+- `bootstrap`
+- `load_model`
+- `validate`
+- `score_experts`
+- `plan_pruning`
+- `write_output`
+- `complete`
+
+---
+
+## Real-model example result (local)
+
+On `qwen1.5-moe-a2.7b-chat-4bit` with `layers 0-3`, `ratio 0.05`, strict mode:
+
+- telemetry experts: `240` (`60` per layer)
+- pruned experts: `12` (`3` per layer)
+- structural apply: patched layers `0..3`, experts `60 -> 57` for patched layers
+
+---
+
+## Security behavior
+
+- path traversal blocked for output writes
+- symlink reads refused for input files
+- bounded safe file reads
+- atomic writes for plan and logs
+- restrictive file/dir permissions where supported
+
+## Verify
+
+```bash
 pnpm verify
 ```

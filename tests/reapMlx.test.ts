@@ -30,10 +30,38 @@ describe('runReapMlx', () => {
     await writeJsonAtomicSafe(modelPath, {
       modelName: 'unit-test-moe',
       experts: [
-        { layer: 0, expert: 0, activationScore: 0.1, tokenCount: 500 },
-        { layer: 0, expert: 1, activationScore: 1.1, tokenCount: 1200 },
-        { layer: 1, expert: 0, activationScore: 0.2, tokenCount: 450 },
-        { layer: 1, expert: 1, activationScore: 0.9, tokenCount: 1000 }
+        {
+          layer: 0,
+          expert: 0,
+          activeTokenCount: 500,
+          weightedActivationNormSum: 55,
+          averageGateValue: 0.11,
+          averageActivationNorm: 1
+        },
+        {
+          layer: 0,
+          expert: 1,
+          activeTokenCount: 1200,
+          weightedActivationNormSum: 780,
+          averageGateValue: 0.65,
+          averageActivationNorm: 1
+        },
+        {
+          layer: 1,
+          expert: 0,
+          activeTokenCount: 450,
+          weightedActivationNormSum: 108,
+          averageGateValue: 0.24,
+          averageActivationNorm: 1
+        },
+        {
+          layer: 1,
+          expert: 1,
+          activeTokenCount: 1000,
+          weightedActivationNormSum: 420,
+          averageGateValue: 0.42,
+          averageActivationNorm: 1
+        }
       ]
     });
 
@@ -42,6 +70,7 @@ describe('runReapMlx', () => {
       outputDir,
       targetRatio: 0.5,
       calibrationRounds: 2,
+      allowLegacySaliency: false,
       jobId: 'job-test'
     });
 
@@ -49,6 +78,8 @@ describe('runReapMlx', () => {
     expect(plan.stats.totalExperts).toBe(4);
     expect(plan.stats.prunedExperts).toBeGreaterThan(0);
     expect(plan.stats.keptExperts).toBeGreaterThan(0);
+    expect(plan.saliencyMethod).toBe('reap');
+    expect(plan.legacyFallbackUsed).toBe(false);
 
     const planFile = path.join(outputDir, 'pruning-plan.json');
     const logFile = path.join(outputDir, 'observation.log');
@@ -71,9 +102,9 @@ describe('runReapMlx', () => {
     await writeJsonAtomicSafe(modelPath, {
       modelName: 'layer-safety',
       experts: [
-        { layer: 0, expert: 0, activationScore: 0.1, tokenCount: 100 },
-        { layer: 1, expert: 0, activationScore: 0.2, tokenCount: 100 },
-        { layer: 2, expert: 0, activationScore: 0.3, tokenCount: 100 }
+        { layer: 0, expert: 0, activeTokenCount: 100, weightedActivationNormSum: 10 },
+        { layer: 1, expert: 0, activeTokenCount: 100, weightedActivationNormSum: 20 },
+        { layer: 2, expert: 0, activeTokenCount: 100, weightedActivationNormSum: 30 }
       ]
     });
 
@@ -81,7 +112,8 @@ describe('runReapMlx', () => {
       modelPath,
       outputDir,
       targetRatio: 0.9,
-      calibrationRounds: 1
+      calibrationRounds: 1,
+      allowLegacySaliency: false
     });
 
     expect(plan.stats.prunedExperts).toBe(0);

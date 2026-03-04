@@ -20,7 +20,7 @@ function stageFromUnknown(value: unknown): ObservationStage | undefined {
     return undefined;
   }
 
-  const allowed = new Set<ObservationStage>([
+  const allowedStages = [
     'bootstrap',
     'load_model',
     'validate',
@@ -29,7 +29,9 @@ function stageFromUnknown(value: unknown): ObservationStage | undefined {
     'write_output',
     'complete',
     'observe'
-  ]);
+  ] as const satisfies readonly ObservationStage[];
+
+  const allowed = new Set<ObservationStage>(allowedStages);
 
   return allowed.has(value as ObservationStage)
     ? (value as ObservationStage)
