@@ -73,6 +73,8 @@ collect options:
   --max-tokens <1..8192>   Per-sample token cap (default: 256)
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
   --renorm-topk            Renormalize top-k gate weights to sum to 1
+  --layer-wise             Enable layer-wise collection mode
+  --batch-size <1..8192>   Token chunk size for collection batching
   --python <bin>           Python binary (default: python3)
 
 full options:
@@ -85,6 +87,8 @@ full options:
   --max-tokens <1..8192>   Per-sample token cap (default: 256)
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
   --renorm-topk            Renormalize top-k gate weights to sum to 1
+  --layer-wise             Enable layer-wise collection mode
+  --batch-size <1..8192>   Token chunk size for collection batching
   --ratio <0..0.95>        Target prune ratio (default: 0.5)
   --min-experts <1..128>   Minimum experts preserved per layer (default: 1)
   --prune-method <name>    Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
@@ -434,6 +438,12 @@ async function handleCollect(options: CliOptions): Promise<void> {
   );
   const includeLayers = optionString(options, 'layers');
   const renormTopK = optionBoolean(options, 'renorm-topk');
+  const layerWise = optionBoolean(options, 'layer-wise');
+  const batchSize = optionString(options, 'batch-size');
+  const parsedBatchSize =
+    typeof batchSize === 'string'
+      ? assertInteger(batchSize, 'batch-size', 1, 8192)
+      : undefined;
   const pythonBin = optionString(options, 'python');
 
   const result = await collectTelemetryWithMlx({
@@ -447,6 +457,8 @@ async function handleCollect(options: CliOptions): Promise<void> {
     maxTokens,
     ...(includeLayers ? { includeLayers } : {}),
     ...(renormTopK ? { renormTopK: true } : {}),
+    ...(layerWise ? { layerWise: true } : {}),
+    ...(typeof parsedBatchSize === 'number' ? { batchSize: parsedBatchSize } : {}),
     ...(pythonBin ? { pythonBin } : {})
   });
 
@@ -463,6 +475,12 @@ async function handleCollect(options: CliOptions): Promise<void> {
   }
   if (metadata && typeof metadata.promptLengthTokens === 'number') {
     process.stdout.write(`total tokens: ${metadata.promptLengthTokens}\n`);
+  }
+  if (metadata && typeof metadata.layerWise === 'boolean') {
+    process.stdout.write(`layer-wise: ${metadata.layerWise ? 'enabled' : 'disabled'}\n`);
+  }
+  if (metadata && typeof metadata.batchSize === 'number' && metadata.batchSize > 0) {
+    process.stdout.write(`batch size: ${metadata.batchSize}\n`);
   }
 }
 
@@ -527,6 +545,12 @@ async function handleFull(options: CliOptions): Promise<void> {
   );
   const includeLayers = optionString(options, 'layers');
   const renormTopK = optionBoolean(options, 'renorm-topk');
+  const layerWise = optionBoolean(options, 'layer-wise');
+  const batchSize = optionString(options, 'batch-size');
+  const parsedBatchSize =
+    typeof batchSize === 'string'
+      ? assertInteger(batchSize, 'batch-size', 1, 8192)
+      : undefined;
   const pythonBin = optionString(options, 'python');
   const dryRun = optionBoolean(options, 'dry-run');
 
@@ -545,6 +569,8 @@ async function handleFull(options: CliOptions): Promise<void> {
     maxTokens,
     ...(includeLayers ? { includeLayers } : {}),
     ...(renormTopK ? { renormTopK: true } : {}),
+    ...(layerWise ? { layerWise: true } : {}),
+    ...(typeof parsedBatchSize === 'number' ? { batchSize: parsedBatchSize } : {}),
     ...(pythonBin ? { pythonBin } : {})
   });
 
@@ -586,6 +612,17 @@ async function handleFull(options: CliOptions): Promise<void> {
   process.stdout.write(`layers patched: ${applyResult.layersPatched}\n`);
   process.stdout.write(`experts before: ${applyResult.expertsBefore}\n`);
   process.stdout.write(`experts after: ${applyResult.expertsAfter}\n`);
+  if (typeof payload.telemetryMetadata.layerWise === 'boolean') {
+    process.stdout.write(
+      `layer-wise: ${payload.telemetryMetadata.layerWise ? 'enabled' : 'disabled'}\n`
+    );
+  }
+  if (
+    typeof payload.telemetryMetadata.batchSize === 'number' &&
+    payload.telemetryMetadata.batchSize > 0
+  ) {
+    process.stdout.write(`batch size: ${payload.telemetryMetadata.batchSize}\n`);
+  }
 }
 
 async function handleObserve(options: CliOptions): Promise<void> {
@@ -616,7 +653,7 @@ async function handleInit(options: CliOptions): Promise<void> {
           .replace(/-/g, '')
           .slice(0, 8)
           .split('')
-          .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+          .reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0);
 
   const telemetry = buildSyntheticTelemetry({
     modelName,

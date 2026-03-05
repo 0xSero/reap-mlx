@@ -15,6 +15,8 @@ export interface MlxCollectConfig {
   maxTokens?: number;
   includeLayers?: string;
   renormTopK?: boolean;
+  layerWise?: boolean;
+  batchSize?: number;
   pythonBin?: string;
 }
 
@@ -100,86 +102,100 @@ def collect_tokens(args, tokenizer):
     return token_batches, 'dataset', processed
 
 
-def update_stats_for_hidden(layer_id, layer, hidden, stats, renorm_topk):
+def update_stats_for_hidden(layer_id, layer, hidden, stats, renorm_topk, batch_size=None):
     h = layer.input_layernorm(hidden)
     flat_h = h.reshape(-1, h.shape[-1])
-    num_tokens = int(flat_h.shape[0])
+    total_tokens = int(flat_h.shape[0])
 
     gate = layer.mlp.gate
     switch = layer.mlp.switch_mlp
     num_experts = int(layer.mlp.num_experts)
-
-    routing_weights = mx.softmax(gate(flat_h).astype(mx.float32), axis=-1)
     topk = int(layer.mlp.top_k)
-    inds = mx.argpartition(-routing_weights, kth=topk - 1, axis=-1)[..., :topk]
-    mx.eval(inds, routing_weights)
 
-    if renorm_topk:
-        topk_weights = mx.take_along_axis(routing_weights, inds, axis=-1)
-        denom = mx.maximum(mx.sum(topk_weights, axis=-1, keepdims=True), 1e-12)
-        routing_weights = routing_weights / denom
+    if batch_size is None or batch_size >= total_tokens:
+        ranges = [(0, total_tokens)]
+    else:
+        ranges = []
+        start = 0
+        while start < total_tokens:
+            stop = min(start + batch_size, total_tokens)
+            ranges.append((start, stop))
+            start = stop
 
-    topk_list = inds.tolist()
-    token_sets = [[] for _ in range(num_experts)]
-    for token_idx in range(num_tokens):
-        for expert_id in topk_list[token_idx]:
-            token_sets[int(expert_id)].append(token_idx)
+    for start, stop in ranges:
+        chunk_h = flat_h[start:stop]
+        num_tokens = int(chunk_h.shape[0])
 
-    for expert_id in range(num_experts):
-        active_tokens = token_sets[expert_id]
-        if len(active_tokens) == 0:
-            continue
+        routing_weights = mx.softmax(gate(chunk_h).astype(mx.float32), axis=-1)
+        inds = mx.argpartition(-routing_weights, kth=topk - 1, axis=-1)[..., :topk]
+        mx.eval(inds, routing_weights)
 
-        idx = mx.array(active_tokens)
-        active_h = flat_h[idx]
+        if renorm_topk:
+            topk_weights = mx.take_along_axis(routing_weights, inds, axis=-1)
+            denom = mx.maximum(mx.sum(topk_weights, axis=-1, keepdims=True), 1e-12)
+            routing_weights = routing_weights / denom
 
-        gp = switch.gate_proj
-        up = switch.up_proj
-        dp = switch.down_proj
+        topk_list = inds.tolist()
+        token_sets = [[] for _ in range(num_experts)]
+        for token_idx in range(num_tokens):
+            for expert_id in topk_list[token_idx]:
+                token_sets[int(expert_id)].append(token_idx)
 
-        g_w = mx.dequantize(
-            gp.weight[expert_id:expert_id + 1],
-            gp.scales[expert_id:expert_id + 1],
-            gp.biases[expert_id:expert_id + 1],
-            gp.group_size,
-            gp.bits,
-        ).squeeze(0)
-        u_w = mx.dequantize(
-            up.weight[expert_id:expert_id + 1],
-            up.scales[expert_id:expert_id + 1],
-            up.biases[expert_id:expert_id + 1],
-            up.group_size,
-            up.bits,
-        ).squeeze(0)
-        d_w = mx.dequantize(
-            dp.weight[expert_id:expert_id + 1],
-            dp.scales[expert_id:expert_id + 1],
-            dp.biases[expert_id:expert_id + 1],
-            dp.group_size,
-            dp.bits,
-        ).squeeze(0)
+        for expert_id in range(num_experts):
+            active_tokens = token_sets[expert_id]
+            if len(active_tokens) == 0:
+                continue
 
-        expert_out = (nn.silu(active_h @ g_w.T) * (active_h @ u_w.T)) @ d_w.T
-        ean_norm = mx.sqrt(mx.sum(expert_out * expert_out, axis=-1))
-        active_rw = routing_weights[idx, expert_id]
-        weighted_norm = ean_norm * active_rw
-        mx.eval(ean_norm, active_rw, weighted_norm)
+            idx = mx.array(active_tokens)
+            active_h = chunk_h[idx]
 
-        key = (layer_id, expert_id)
-        entry = stats.get(key)
-        if entry is None:
-            entry = {
-                'activeTokenCount': 0,
-                'gateValueSum': 0.0,
-                'activationNormSum': 0.0,
-                'weightedActivationNormSum': 0.0,
-            }
-            stats[key] = entry
+            gp = switch.gate_proj
+            up = switch.up_proj
+            dp = switch.down_proj
 
-        entry['activeTokenCount'] += len(active_tokens)
-        entry['gateValueSum'] += float(mx.sum(active_rw).item())
-        entry['activationNormSum'] += float(mx.sum(ean_norm).item())
-        entry['weightedActivationNormSum'] += float(mx.sum(weighted_norm).item())
+            g_w = mx.dequantize(
+                gp.weight[expert_id:expert_id + 1],
+                gp.scales[expert_id:expert_id + 1],
+                gp.biases[expert_id:expert_id + 1],
+                gp.group_size,
+                gp.bits,
+            ).squeeze(0)
+            u_w = mx.dequantize(
+                up.weight[expert_id:expert_id + 1],
+                up.scales[expert_id:expert_id + 1],
+                up.biases[expert_id:expert_id + 1],
+                up.group_size,
+                up.bits,
+            ).squeeze(0)
+            d_w = mx.dequantize(
+                dp.weight[expert_id:expert_id + 1],
+                dp.scales[expert_id:expert_id + 1],
+                dp.biases[expert_id:expert_id + 1],
+                dp.group_size,
+                dp.bits,
+            ).squeeze(0)
+
+            expert_out = (nn.silu(active_h @ g_w.T) * (active_h @ u_w.T)) @ d_w.T
+            ean_norm = mx.sqrt(mx.sum(expert_out * expert_out, axis=-1))
+            active_rw = routing_weights[idx, expert_id]
+            weighted_norm = ean_norm * active_rw
+            mx.eval(ean_norm, active_rw, weighted_norm)
+
+            key = (layer_id, expert_id)
+            entry = stats.get(key)
+            if entry is None:
+                entry = {
+                    'activeTokenCount': 0,
+                    'gateValueSum': 0.0,
+                    'activationNormSum': 0.0,
+                    'weightedActivationNormSum': 0.0,
+                }
+                stats[key] = entry
+
+            entry['activeTokenCount'] += len(active_tokens)
+            entry['gateValueSum'] += float(mx.sum(active_rw).item())
+            entry['activationNormSum'] += float(mx.sum(ean_norm).item())
+            entry['weightedActivationNormSum'] += float(mx.sum(weighted_norm).item())
 
 
 def main():
@@ -193,8 +209,13 @@ def main():
     parser.add_argument('--max-tokens', type=int, default=256)
     parser.add_argument('--layers', default='')
     parser.add_argument('--renorm-topk', action='store_true')
+    parser.add_argument('--layer-wise', action='store_true')
+    parser.add_argument('--batch-size', type=int, default=None)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
+
+    if args.batch_size is not None and int(args.batch_size) < 1:
+        raise RuntimeError('batch-size must be >= 1')
 
     model, tokenizer = load(args.model, lazy=False)
     token_batches, input_mode, processed_samples = collect_tokens(args, tokenizer)
@@ -202,6 +223,7 @@ def main():
     layers = model.model.layers
     num_layers = len(layers)
     selected_layers = parse_layers(args.layers if args.layers else None, num_layers)
+    selected_layer_set = set(selected_layers)
 
     stats = {}
     total_prompt_tokens = 0
@@ -210,19 +232,43 @@ def main():
         total_prompt_tokens += len(tokens)
         x = mx.array([tokens])
 
-        mask = None
         hidden = model.model.embed_tokens(x)
 
+        mask = None
         if x.shape[1] > 1:
             mask = mx.full((x.shape[1], x.shape[1]), -1e9)
             mask = mx.triu(mask, k=1)
             mask = mask.astype(hidden.dtype)
 
-        for layer_id, layer in enumerate(layers):
-            if layer_id in selected_layers:
-                update_stats_for_hidden(layer_id, layer, hidden, stats, args.renorm_topk)
+        if args.layer_wise:
+            for target_layer in selected_layers:
+                local_hidden = hidden
+                for layer_id, layer in enumerate(layers):
+                    if layer_id == target_layer:
+                        update_stats_for_hidden(
+                            target_layer,
+                            layer,
+                            local_hidden,
+                            stats,
+                            args.renorm_topk,
+                            args.batch_size,
+                        )
+                        break
+                    local_hidden = layer(local_hidden, mask=mask)
+        else:
+            local_hidden = hidden
+            for layer_id, layer in enumerate(layers):
+                if layer_id in selected_layer_set:
+                    update_stats_for_hidden(
+                        layer_id,
+                        layer,
+                        local_hidden,
+                        stats,
+                        args.renorm_topk,
+                        args.batch_size,
+                    )
 
-            hidden = layer(hidden, mask=mask)
+                local_hidden = layer(local_hidden, mask=mask)
 
     experts = []
     num_experts_by_layer = {}
@@ -269,6 +315,8 @@ def main():
             'topK': int(layers[0].mlp.top_k if len(layers) > 0 else 0),
             'numExpertsByLayer': {str(k): int(v) for k, v in num_experts_by_layer.items()},
             'renormTopK': bool(args.renorm_topk),
+            'layerWise': bool(args.layer_wise),
+            'batchSize': int(args.batch_size) if args.batch_size is not None else 0,
             'dataset': str(args.dataset) if args.dataset is not None else '',
             'datasetSplit': str(args.dataset_split) if args.dataset_split is not None else '',
             'datasetTextField': str(args.dataset_text_field) if args.dataset_text_field is not None else '',
@@ -286,9 +334,13 @@ if __name__ == '__main__':
 `;
 }
 
-function buildArgs(config: MlxCollectConfig, telemetryPath: string): string[] {
+export function buildMlxCollectArgs(config: MlxCollectConfig, telemetryPath: string): string[] {
   const maxTokens = assertInteger(config.maxTokens ?? 256, 'maxTokens', 1, 8192);
   const maxSamples = assertInteger(config.maxSamples ?? 100, 'maxSamples', 1, 100_000);
+  const batchSize =
+    typeof config.batchSize === 'number'
+      ? assertInteger(config.batchSize, 'batchSize', 1, 8192)
+      : undefined;
 
   const prompt = typeof config.prompt === 'string' && config.prompt.trim().length > 0
     ? config.prompt
@@ -324,10 +376,16 @@ function buildArgs(config: MlxCollectConfig, telemetryPath: string): string[] {
     '--layers',
     config.includeLayers ?? '',
     ...(config.renormTopK ? ['--renorm-topk'] : []),
+    ...(config.layerWise ? ['--layer-wise'] : []),
+    ...(typeof batchSize === 'number' ? ['--batch-size', String(batchSize)] : []),
     '--output',
     telemetryPath
   ];
 }
+
+export const __testOnly = {
+  buildMlxCollectArgs
+};
 
 function throwIfFailed(result: SpawnSyncReturns<string>, commandPreview: string): void {
   if (result.error) {
@@ -358,7 +416,7 @@ export async function collectTelemetryWithMlx(
     ? config.pythonBin
     : 'python3';
 
-  const args = buildArgs(config, telemetryPath);
+  const args = buildMlxCollectArgs(config, telemetryPath);
 
   const commandPreview = `${pythonBin} ${args.join(' ')}`;
   const result = spawnSync(pythonBin, args, {

@@ -30,7 +30,9 @@ node dist/cli/index.js collect \
   --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
   --output ./tmp \
   --prompt "Explain sparse MoE routing" \
-  --max-tokens 512
+  --max-tokens 512 \
+  --layer-wise \
+  --batch-size 128
 ```
 
 ### 2) Build pruning plan
@@ -85,10 +87,37 @@ This is the REAP-style scoring used for pruning decisions in this project.
 --model <dir>       MLX model directory
 --output <dir>      Telemetry output directory
 --prompt <text>     Calibration text
+--dataset <name>    HuggingFace dataset name
+--dataset-split     Dataset split (default: train)
+--dataset-text-field Field to read text from (default: instruction)
+--max-samples <n>   Max dataset samples to aggregate (default: 100)
 --max-tokens <n>    Token cap (default: 256)
 --layers <spec>     Example: "0-3,8,10"
 --renorm-topk       Renormalize top-k gate weights
+--layer-wise        Re-run forward passes per selected layer before scoring
+--batch-size <n>    Chunk flattened token activations during scoring
 --python <bin>      Python binary (default: python3)
+```
+
+`--layer-wise` is useful when you want per-layer telemetry with minimal cross-layer coupling. `--batch-size` trades throughput for lower peak memory during expert scoring.
+
+### full
+
+```text
+--model <dir>       MLX model directory
+--output <dir>      Pipeline output directory
+--dataset <name>    HuggingFace dataset name
+--dataset-split     Dataset split (default: train)
+--dataset-text-field Field to read text from (default: instruction)
+--max-samples <n>   Max dataset samples to aggregate (default: 100)
+--max-tokens <n>    Token cap (default: 256)
+--layers <spec>     Example: "0-3,8,10"
+--renorm-topk       Renormalize top-k gate weights
+--layer-wise        Re-run forward passes per selected layer before scoring
+--batch-size <n>    Chunk flattened token activations during scoring
+--ratio <0..0.95>   Target prune ratio per layer
+--min-experts <n>   Minimum experts kept per layer
+--dry-run           Validate plan only
 ```
 
 ### run

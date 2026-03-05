@@ -19,8 +19,12 @@ node dist/cli/index.js collect \
   --output ./tmp \
   --prompt "Explain sparse MoE routing in one sentence." \
   --max-tokens 64 \
-  --layers 0-3
+  --layers 0-3 \
+  --layer-wise \
+  --batch-size 128
 ```
+
+Use `--layer-wise` when you want each selected layer scored from its own replayed hidden state path. Use `--batch-size` when the token-by-expert scoring step needs a lower peak memory footprint.
 
 Step 2: Build a pruning plan. The ratio is how many experts to prune per layer (0.05 = 5%).
 
