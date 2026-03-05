@@ -39,7 +39,8 @@ Usage:
 
 Commands:
   run       Build pruning plan from telemetry JSON
-  collect   Collect REAP telemetry from a real MLX model
+  collect   Collect REAP telemetry from MLX model (prompt or dataset)
+  full      Run full pipeline: collect -> run -> apply
   apply     Apply pruning plan to an MLX checkpoint
   observe   Summarize observation log
   init      Generate synthetic telemetry JSON
@@ -64,11 +65,36 @@ run options:
 collect options:
   --model <dir>            Local MLX model directory
   --output <dir>           Output directory for telemetry JSON
-  --prompt <text>          Prompt used to collect routing telemetry
-  --max-tokens <1..8192>   Prompt token cap (default: 256)
+  --prompt <text>          Single calibration text
+  --dataset <name>         HuggingFace dataset name (full-runner mode)
+  --dataset-split <name>   Dataset split (default: train)
+  --dataset-text-field <f> Field to read text from (default: instruction)
+  --max-samples <n>        Max dataset samples to aggregate (default: 100)
+  --max-tokens <1..8192>   Per-sample token cap (default: 256)
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
   --renorm-topk            Renormalize top-k gate weights to sum to 1
   --python <bin>           Python binary (default: python3)
+
+full options:
+  --model <dir>            Local MLX model directory
+  --output <dir>           Pipeline output directory
+  --dataset <name>         HuggingFace dataset name
+  --dataset-split <name>   Dataset split (default: train)
+  --dataset-text-field <f> Field to read text from (default: instruction)
+  --max-samples <n>        Max dataset samples to aggregate (default: 100)
+  --max-tokens <1..8192>   Per-sample token cap (default: 256)
+  --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
+  --renorm-topk            Renormalize top-k gate weights to sum to 1
+  --ratio <0..0.95>        Target prune ratio (default: 0.5)
+  --min-experts <1..128>   Minimum experts preserved per layer (default: 1)
+  --prune-method <name>    Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+  --n-experts-to-prune-per-layer <n> Prune exactly n experts per layer
+  --preserve-super-experts Preserve super experts from pruning mask
+  --preserve-outliers      Preserve outlier experts (include all layers)
+  --no-legacy              Require REAP saliency fields
+  --python <bin>           Python binary (default: python3)
+  --dry-run                Validate apply step without writing pruned model
+  --json                   Output pipeline result as JSON
 
 apply options:
   --model <dir>            Source MLX model directory
@@ -279,14 +305,31 @@ async function ensureFileReadable(filePath: string): Promise<void> {
   await fs.access(absolutePath, constants.R_OK);
 }
 
-async function handleRun(options: CliOptions): Promise<void> {
-  const modelPath = requiredOption(options, 'model');
-  const outputDir = requiredOption(options, 'output');
+function buildRunConfigFromOptions(
+  options: CliOptions,
+  modelPath: string,
+  outputDir: string,
+  defaults?: { targetRatio?: number }
+): {
+  modelPath: string;
+  outputDir: string;
+  targetRatio?: number;
+  calibrationRounds?: number;
+  minExpertsPerLayer?: number;
+  pruneMethod?: PruneMethod;
+  nExpertsToPrunePerLayer?: number;
+  preserveSuperExperts?: boolean;
+  preserveOutliers?: boolean;
+  allowLegacySaliency?: boolean;
+  jobId?: string;
+  observationPath?: string;
+} {
   const ratioOption = optionString(options, 'ratio');
-  const targetRatio =
+  let targetRatio =
     typeof ratioOption === 'string'
       ? assertFiniteNumber(ratioOption, 'ratio', 0, 0.95)
-      : undefined;
+      : defaults?.targetRatio;
+
   const calibration = optionString(options, 'calibration');
   const calibrationRounds =
     typeof calibration === 'string'
@@ -317,18 +360,14 @@ async function handleRun(options: CliOptions): Promise<void> {
     throw new Error('Only one of --preserve-super-experts or --preserve-outliers can be set');
   }
 
-  if (typeof nExpertsToPrunePerLayer === 'number' && typeof targetRatio === 'undefined') {
-    // accepted: count-driven parity mode
-  } else if (typeof targetRatio === 'undefined') {
+  if (typeof nExpertsToPrunePerLayer !== 'number' && typeof targetRatio !== 'number') {
     throw new Error('Missing required option --ratio unless --n-experts-to-prune-per-layer is set');
   }
 
   const jobId = optionString(options, 'job-id');
   const observationPath = optionString(options, 'observation');
 
-  await ensureFileReadable(modelPath);
-
-  const runConfig = {
+  return {
     modelPath,
     outputDir,
     ...(typeof targetRatio === 'number' ? { targetRatio } : {}),
@@ -344,7 +383,15 @@ async function handleRun(options: CliOptions): Promise<void> {
     ...(jobId ? { jobId } : {}),
     ...(observationPath ? { observationPath } : {})
   };
+}
 
+async function handleRun(options: CliOptions): Promise<void> {
+  const modelPath = requiredOption(options, 'model');
+  const outputDir = requiredOption(options, 'output');
+
+  await ensureFileReadable(modelPath);
+
+  const runConfig = buildRunConfigFromOptions(options, modelPath, outputDir);
   const plan = await runReapMlx(runConfig);
 
   if (optionBoolean(options, 'json')) {
@@ -360,7 +407,25 @@ async function handleRun(options: CliOptions): Promise<void> {
 async function handleCollect(options: CliOptions): Promise<void> {
   const modelPath = requiredOption(options, 'model');
   const outputDir = requiredOption(options, 'output');
-  const prompt = requiredOption(options, 'prompt');
+  const prompt = optionString(options, 'prompt');
+  const datasetName = optionString(options, 'dataset');
+
+  if (!prompt && !datasetName) {
+    throw new Error('Missing required option --prompt or --dataset');
+  }
+
+  if (prompt && datasetName) {
+    throw new Error('Use only one of --prompt or --dataset');
+  }
+
+  const datasetSplit = optionString(options, 'dataset-split') ?? 'train';
+  const datasetTextField = optionString(options, 'dataset-text-field') ?? 'instruction';
+  const maxSamples = assertInteger(
+    optionString(options, 'max-samples') ?? 100,
+    'max-samples',
+    1,
+    100000
+  );
   const maxTokens = assertInteger(
     optionString(options, 'max-tokens') ?? 256,
     'max-tokens',
@@ -374,7 +439,11 @@ async function handleCollect(options: CliOptions): Promise<void> {
   const result = await collectTelemetryWithMlx({
     modelPath,
     outputDir,
-    prompt,
+    ...(prompt ? { prompt } : {}),
+    ...(datasetName ? { datasetName } : {}),
+    ...(datasetName ? { datasetSplit } : {}),
+    ...(datasetName ? { datasetTextField } : {}),
+    ...(datasetName ? { maxSamples } : {}),
     maxTokens,
     ...(includeLayers ? { includeLayers } : {}),
     ...(renormTopK ? { renormTopK: true } : {}),
@@ -384,6 +453,35 @@ async function handleCollect(options: CliOptions): Promise<void> {
   process.stdout.write(`telemetry written: ${result.telemetryPath}\n`);
   process.stdout.write(`model: ${result.telemetry.modelName}\n`);
   process.stdout.write(`experts: ${result.telemetry.experts.length}\n`);
+
+  const metadata = result.telemetry.metadata;
+  if (metadata && typeof metadata.inputMode === 'string') {
+    process.stdout.write(`input mode: ${metadata.inputMode}\n`);
+  }
+  if (metadata && typeof metadata.processedSamples === 'number') {
+    process.stdout.write(`processed samples: ${metadata.processedSamples}\n`);
+  }
+  if (metadata && typeof metadata.promptLengthTokens === 'number') {
+    process.stdout.write(`total tokens: ${metadata.promptLengthTokens}\n`);
+  }
+}
+
+async function runApplyWithConfig(config: {
+  modelPath: string;
+  planPath: string;
+  outputDir: string;
+  pythonBin?: string;
+  dryRun?: boolean;
+}) {
+  await ensureFileReadable(config.planPath);
+
+  return applyPruningPlanToMlxModel({
+    modelPath: config.modelPath,
+    planPath: config.planPath,
+    outputDir: config.outputDir,
+    ...(config.pythonBin ? { pythonBin: config.pythonBin } : {}),
+    ...(config.dryRun ? { dryRun: true } : {})
+  });
 }
 
 async function handleApply(options: CliOptions): Promise<void> {
@@ -393,9 +491,7 @@ async function handleApply(options: CliOptions): Promise<void> {
   const pythonBin = optionString(options, 'python');
   const dryRun = optionBoolean(options, 'dry-run');
 
-  await ensureFileReadable(planPath);
-
-  const result = await applyPruningPlanToMlxModel({
+  const result = await runApplyWithConfig({
     modelPath,
     planPath,
     outputDir,
@@ -409,6 +505,87 @@ async function handleApply(options: CliOptions): Promise<void> {
   process.stdout.write(`experts before: ${result.expertsBefore}\n`);
   process.stdout.write(`experts after: ${result.expertsAfter}\n`);
   process.stdout.write(`plan job id: ${result.pruningPlanJobId}\n`);
+}
+
+async function handleFull(options: CliOptions): Promise<void> {
+  const modelPath = requiredOption(options, 'model');
+  const outputDir = requiredOption(options, 'output');
+  const datasetName = requiredOption(options, 'dataset');
+  const datasetSplit = optionString(options, 'dataset-split') ?? 'train';
+  const datasetTextField = optionString(options, 'dataset-text-field') ?? 'instruction';
+  const maxSamples = assertInteger(
+    optionString(options, 'max-samples') ?? 100,
+    'max-samples',
+    1,
+    100000
+  );
+  const maxTokens = assertInteger(
+    optionString(options, 'max-tokens') ?? 256,
+    'max-tokens',
+    1,
+    8192
+  );
+  const includeLayers = optionString(options, 'layers');
+  const renormTopK = optionBoolean(options, 'renorm-topk');
+  const pythonBin = optionString(options, 'python');
+  const dryRun = optionBoolean(options, 'dry-run');
+
+  await ensureSecureDir(outputDir);
+
+  const collectOutputDir = path.resolve(outputDir, 'telemetry');
+  await ensureSecureDir(collectOutputDir);
+
+  const collectResult = await collectTelemetryWithMlx({
+    modelPath,
+    outputDir: collectOutputDir,
+    datasetName,
+    datasetSplit,
+    datasetTextField,
+    maxSamples,
+    maxTokens,
+    ...(includeLayers ? { includeLayers } : {}),
+    ...(renormTopK ? { renormTopK: true } : {}),
+    ...(pythonBin ? { pythonBin } : {})
+  });
+
+  const planOutputDir = path.resolve(outputDir, 'plan');
+  await ensureSecureDir(planOutputDir);
+  const runConfig = buildRunConfigFromOptions(options, collectResult.telemetryPath, planOutputDir, {
+    targetRatio: 0.5
+  });
+  const plan = await runReapMlx(runConfig);
+
+  const applyOutputDir = path.resolve(outputDir, 'pruned-model');
+  await ensureSecureDir(applyOutputDir);
+  const applyResult = await runApplyWithConfig({
+    modelPath,
+    planPath: path.resolve(planOutputDir, 'pruning-plan.json'),
+    outputDir: applyOutputDir,
+    ...(pythonBin ? { pythonBin } : {}),
+    ...(dryRun ? { dryRun: true } : {})
+  });
+
+  const payload = {
+    telemetryPath: collectResult.telemetryPath,
+    telemetryExperts: collectResult.telemetry.experts.length,
+    telemetryMetadata: collectResult.telemetry.metadata ?? {},
+    planPath: path.resolve(planOutputDir, 'pruning-plan.json'),
+    plan,
+    apply: applyResult
+  };
+
+  if (optionBoolean(options, 'json')) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`telemetry written: ${payload.telemetryPath}\n`);
+  process.stdout.write(`plan written: ${payload.planPath}\n`);
+  process.stdout.write(`output model: ${applyResult.outputModelPath}\n`);
+  process.stdout.write(`output config: ${applyResult.outputConfigPath}\n`);
+  process.stdout.write(`layers patched: ${applyResult.layersPatched}\n`);
+  process.stdout.write(`experts before: ${applyResult.expertsBefore}\n`);
+  process.stdout.write(`experts after: ${applyResult.expertsAfter}\n`);
 }
 
 async function handleObserve(options: CliOptions): Promise<void> {
@@ -473,6 +650,10 @@ export async function main(argv = process.argv): Promise<void> {
     }
     case 'collect': {
       await handleCollect(parsed.options);
+      return;
+    }
+    case 'full': {
+      await handleFull(parsed.options);
       return;
     }
     case 'apply': {

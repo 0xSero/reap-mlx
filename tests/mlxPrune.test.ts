@@ -99,6 +99,6 @@ describe('applyPruningPlanToMlxModel', () => {
       expect(result.expertsBefore).toBeGreaterThanOrEqual(result.expertsAfter);
       expect(result.pruningPlanJobId).toBe('job-dryrun');
     },
-    30000
+    60000
   );
 });

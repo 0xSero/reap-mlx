@@ -66,4 +66,37 @@ describe('cli', () => {
     const parsed = JSON.parse(observeResult.stdout) as { totalEvents: number };
     expect(parsed.totalEvents).toBeGreaterThan(0);
   });
+
+  it('supports run with fixed prune count and no ratio', async () => {
+    const tempDir = await createTempDir();
+    const telemetryPath = path.join(tempDir, 'telemetry.json');
+    const outputDir = path.join(tempDir, 'out-fixed');
+    const root = path.resolve(__dirname, '..');
+
+    await execFileAsync('node', [
+      path.join(root, 'dist/cli/index.js'),
+      'init',
+      '--output',
+      telemetryPath,
+      '--layers',
+      '2',
+      '--experts',
+      '4',
+      '--seed',
+      '456'
+    ]);
+
+    const runResult = await execFileAsync('node', [
+      path.join(root, 'dist/cli/index.js'),
+      'run',
+      '--model',
+      telemetryPath,
+      '--output',
+      outputDir,
+      '--n-experts-to-prune-per-layer',
+      '1'
+    ]);
+
+    expect(runResult.stdout).toContain('pruned experts:');
+  });
 });

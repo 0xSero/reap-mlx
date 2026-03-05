@@ -1,0 +1,122 @@
+{
+  "modelName": "tiny-random-MixtralForCausalLM",
+  "experts": [
+    {
+      "layer": 0,
+      "expert": 0,
+      "activeTokenCount": 22212,
+      "tokenCount": 22212,
+      "activationNormSum": 469.9357106536627,
+      "weightedActivationNormSum": 129.17966947704554,
+      "reap": 0.0058157602325081825,
+      "eanSum": 469.9357106536627,
+      "eanMean": 0.02115683912541251,
+      "weightedEanSum": 129.17966947704554,
+      "frequency": 22212,
+      "gateValueSum": 6104.755892634392
+    },
+    {
+      "layer": 0,
+      "expert": 1,
+      "activeTokenCount": 20973,
+      "tokenCount": 20973,
+      "activationNormSum": 462.6859387084842,
+      "weightedActivationNormSum": 130.7986254170537,
+      "reap": 0.006236524321138859,
+      "eanSum": 462.6859387084842,
+      "eanMean": 0.022061027926786065,
+      "weightedEanSum": 130.7986254170537,
+      "frequency": 20973,
+      "gateValueSum": 5922.97080218792
+    },
+    {
+      "layer": 0,
+      "expert": 2,
+      "activeTokenCount": 23990,
+      "tokenCount": 23990,
+      "activationNormSum": 540.3909661471844,
+      "weightedActivationNormSum": 149.87255979515612,
+      "reap": 0.006247293204069138,
+      "eanSum": 540.3909661471844,
+      "eanMean": 0.022525675954447034,
+      "weightedEanSum": 149.87255979515612,
+      "frequency": 23990,
+      "gateValueSum": 6655.862865447998
+    },
+    {
+      "layer": 0,
+      "expert": 3,
+      "activeTokenCount": 22939,
+      "tokenCount": 22939,
+      "activationNormSum": 506.4788393005729,
+      "weightedActivationNormSum": 140.40668315812945,
+      "reap": 0.006120872218161821,
+      "eanSum": 506.4788393005729,
+      "eanMean": 0.02207937744891115,
+      "weightedEanSum": 140.40668315812945,
+      "frequency": 22939,
+      "gateValueSum": 6360.92357301712
+    },
+    {
+      "layer": 1,
+      "expert": 0,
+      "activeTokenCount": 20499,
+      "tokenCount": 20499,
+      "activationNormSum": 452.90028035640717,
+      "weightedActivationNormSum": 122.92786533385515,
+      "reap": 0.005996773950755596,
+      "eanSum": 452.90028035640717,
+      "eanMean": 0.022093774347841707,
+      "weightedEanSum": 122.92786533385515,
+      "frequency": 20499,
+      "gateValueSum": 5564.110691964626
+    },
+    {
+      "layer": 1,
+      "expert": 1,
+      "activeTokenCount": 22894,
+      "tokenCount": 22894,
+      "activationNormSum": 501.55283273756504,
+      "weightedActivationNormSum": 136.29691164568067,
+      "reap": 0.005953390151262283,
+      "eanSum": 501.55283273756504,
+      "eanMean": 0.02190761041048157,
+      "weightedEanSum": 136.29691164568067,
+      "frequency": 22894,
+      "gateValueSum": 6216.987911820412
+    },
+    {
+      "layer": 1,
+      "expert": 2,
+      "activeTokenCount": 20787,
+      "tokenCount": 20787,
+      "activationNormSum": 452.0534756090492,
+      "weightedActivationNormSum": 122.74928982090205,
+      "reap": 0.005905098747462034,
+      "eanSum": 452.0534756090492,
+      "eanMean": 0.02174693200601574,
+      "weightedEanSum": 122.74928982090205,
+      "frequency": 20787,
+      "gateValueSum": 5642.759145855904
+    },
+    {
+      "layer": 1,
+      "expert": 3,
+      "activeTokenCount": 25934,
+      "tokenCount": 25934,
+      "activationNormSum": 579.3163056820631,
+      "weightedActivationNormSum": 161.4156287536025,
+      "reap": 0.006224093027412891,
+      "eanSum": 579.3163056820631,
+      "eanMean": 0.02233810078206459,
+      "weightedEanSum": 161.4156287536025,
+      "frequency": 25934,
+      "gateValueSum": 7223.3980630636215
+    }
+  ],
+  "metadata": {
+    "source": "og_reap_observer_pt",
+    "dataset": "theblackcat102/evol-codealpaca-v1",
+    "samples": 500
+  }
+}
