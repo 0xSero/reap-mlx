@@ -21,6 +21,7 @@ export type {
   ModelTelemetry,
   ObservationEvent,
   ObservationSummary,
+  PruneMethod,
   PruningPlan,
   RunConfig,
   SaliencySource

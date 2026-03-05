@@ -9,6 +9,7 @@ import type {
   ExpertDecision,
   ExpertSignal,
   ModelTelemetry,
+  PruneMethod,
   PruningPlan,
   SaliencySource
 } from './types.js';
@@ -45,6 +46,7 @@ export interface ReapMlxPipelineComponents {
     experts: ExpertSignal[],
     options: {
       allowLegacySaliency: boolean;
+      pruneMethod: PruneMethod;
     }
   ) => SaliencyScoreResult;
   selectPruning: (
@@ -52,6 +54,9 @@ export interface ReapMlxPipelineComponents {
     options: {
       targetRatio: number;
       minExpertsPerLayer: number;
+      nExpertsToPrunePerLayer?: number;
+      preserveSuperExperts: boolean;
+      preserveOutliers: boolean;
     }
   ) => PruningSelection;
   buildDecisions: (
@@ -88,6 +93,16 @@ function optionalInteger(
   }
 
   return assertInteger(value, label, min, max);
+}
+
+function pickFirstFinite(...values: Array<number | undefined>): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
 function validateExpertSignal(input: unknown, index: number): ExpertSignal {
@@ -148,6 +163,48 @@ function validateExpertSignal(input: unknown, index: number): ExpertSignal {
     0,
     1_000_000_000
   );
+  const frequency = optionalFinite(
+    candidate.frequency,
+    `experts[${index}].frequency`,
+    0,
+    1_000_000_000
+  );
+  const eanSum = optionalFinite(
+    candidate.eanSum,
+    `experts[${index}].eanSum`,
+    0,
+    1_000_000_000
+  );
+  const eanMean = optionalFinite(
+    candidate.eanMean,
+    `experts[${index}].eanMean`,
+    0,
+    1_000_000_000
+  );
+  const weightedEanSum = optionalFinite(
+    candidate.weightedEanSum,
+    `experts[${index}].weightedEanSum`,
+    0,
+    1_000_000_000
+  );
+  const reap = optionalFinite(
+    candidate.reap,
+    `experts[${index}].reap`,
+    0,
+    1_000_000_000
+  );
+  const maxActivation = optionalFinite(
+    candidate.maxActivation,
+    `experts[${index}].maxActivation`,
+    0,
+    1_000_000_000
+  );
+  const maxActivationNorm = optionalFinite(
+    candidate.maxActivationNorm,
+    `experts[${index}].maxActivationNorm`,
+    0,
+    1_000_000_000
+  );
 
   const hasReapSignal =
     typeof weightedActivationNormSum === 'number' ||
@@ -156,11 +213,18 @@ function validateExpertSignal(input: unknown, index: number): ExpertSignal {
       typeof activationNormSum === 'number' &&
       (typeof activeTokenCount === 'number' || typeof tokenCount === 'number'));
 
+  const hasParitySignal =
+    typeof frequency === 'number' ||
+    typeof eanSum === 'number' ||
+    typeof eanMean === 'number' ||
+    typeof weightedEanSum === 'number' ||
+    typeof reap === 'number';
+
   const hasLegacySignal = typeof activationScore === 'number';
 
-  if (!hasReapSignal && !hasLegacySignal) {
+  if (!hasReapSignal && !hasParitySignal && !hasLegacySignal) {
     throw new Error(
-      `experts[${index}] must include REAP saliency fields or activationScore fallback`
+      `experts[${index}] must include pruning saliency fields or activationScore fallback`
     );
   }
 
@@ -174,7 +238,14 @@ function validateExpertSignal(input: unknown, index: number): ExpertSignal {
     ...(typeof averageActivationNorm === 'number' ? { averageActivationNorm } : {}),
     ...(typeof gateValueSum === 'number' ? { gateValueSum } : {}),
     ...(typeof activationNormSum === 'number' ? { activationNormSum } : {}),
-    ...(typeof weightedActivationNormSum === 'number' ? { weightedActivationNormSum } : {})
+    ...(typeof weightedActivationNormSum === 'number' ? { weightedActivationNormSum } : {}),
+    ...(typeof frequency === 'number' ? { frequency } : {}),
+    ...(typeof eanSum === 'number' ? { eanSum } : {}),
+    ...(typeof eanMean === 'number' ? { eanMean } : {}),
+    ...(typeof weightedEanSum === 'number' ? { weightedEanSum } : {}),
+    ...(typeof reap === 'number' ? { reap } : {}),
+    ...(typeof maxActivation === 'number' ? { maxActivation } : {}),
+    ...(typeof maxActivationNorm === 'number' ? { maxActivationNorm } : {})
   };
 }
 
@@ -292,6 +363,7 @@ function scoreSaliency(
   experts: ExpertSignal[],
   options: {
     allowLegacySaliency: boolean;
+    pruneMethod: PruneMethod;
   }
 ): SaliencyScoreResult {
   const scoredExperts = [] as ScoredExpert[];
@@ -303,29 +375,55 @@ function scoreSaliency(
     let signal: number | undefined;
     let saliencySource: SaliencySource | undefined;
 
+    if (options.pruneMethod === 'frequency') {
+      signal = pickFirstFinite(expert.frequency, expert.activeTokenCount, expert.tokenCount);
+      saliencySource = 'frequency';
+    } else if (options.pruneMethod === 'ean_sum') {
+      signal = pickFirstFinite(expert.eanSum, expert.activationNormSum);
+      saliencySource = 'ean_sum';
+    } else if (options.pruneMethod === 'ean_mean') {
+      if (typeof expert.eanMean === 'number') {
+        signal = expert.eanMean;
+      } else if (typeof expert.averageActivationNorm === 'number') {
+        signal = expert.averageActivationNorm;
+      } else if (typeof expert.activationNormSum === 'number' && activeTokenCount > 0) {
+        signal = expert.activationNormSum / activeTokenCount;
+      }
+      saliencySource = 'ean_mean';
+    } else if (options.pruneMethod === 'weighted_ean_sum') {
+      signal = pickFirstFinite(expert.weightedEanSum, expert.weightedActivationNormSum);
+      saliencySource = 'weighted_ean_sum';
+    } else {
+      if (typeof expert.reap === 'number') {
+        signal = expert.reap;
+        saliencySource = 'reap';
+      } else if (
+        typeof expert.weightedActivationNormSum === 'number' &&
+        activeTokenCount > 0
+      ) {
+        signal = expert.weightedActivationNormSum / activeTokenCount;
+        saliencySource = 'weighted_activation_sum';
+      } else if (
+        typeof expert.averageGateValue === 'number' &&
+        typeof expert.averageActivationNorm === 'number'
+      ) {
+        signal = expert.averageGateValue * expert.averageActivationNorm;
+        saliencySource = 'mean_gate_x_norm';
+      } else if (
+        typeof expert.gateValueSum === 'number' &&
+        typeof expert.activationNormSum === 'number' &&
+        activeTokenCount > 0
+      ) {
+        const meanGate = expert.gateValueSum / activeTokenCount;
+        const meanNorm = expert.activationNormSum / activeTokenCount;
+        signal = meanGate * meanNorm;
+        saliencySource = 'mean_gate_x_norm_from_sums';
+      }
+    }
+
     if (
-      typeof expert.weightedActivationNormSum === 'number' &&
-      activeTokenCount > 0
-    ) {
-      signal = expert.weightedActivationNormSum / activeTokenCount;
-      saliencySource = 'weighted_activation_sum';
-    } else if (
-      typeof expert.averageGateValue === 'number' &&
-      typeof expert.averageActivationNorm === 'number'
-    ) {
-      signal = expert.averageGateValue * expert.averageActivationNorm;
-      saliencySource = 'mean_gate_x_norm';
-    } else if (
-      typeof expert.gateValueSum === 'number' &&
-      typeof expert.activationNormSum === 'number' &&
-      activeTokenCount > 0
-    ) {
-      const meanGate = expert.gateValueSum / activeTokenCount;
-      const meanNorm = expert.activationNormSum / activeTokenCount;
-      signal = meanGate * meanNorm;
-      saliencySource = 'mean_gate_x_norm_from_sums';
-    } else if (
       options.allowLegacySaliency &&
+      typeof signal !== 'number' &&
       typeof expert.activationScore === 'number'
     ) {
       const tokenWeight = Math.log2((activeTokenCount || 1) + 2);
@@ -336,7 +434,7 @@ function scoreSaliency(
 
     if (typeof signal !== 'number' || typeof saliencySource === 'undefined') {
       throw new Error(
-        `Missing REAP saliency fields for layer=${expert.layer} expert=${expert.expert}`
+        `Missing saliency fields for pruneMethod=${options.pruneMethod} layer=${expert.layer} expert=${expert.expert}`
       );
     }
 
@@ -362,6 +460,17 @@ function scoreSaliency(
         : {}),
       ...(typeof expert.weightedActivationNormSum === 'number'
         ? { weightedActivationNormSum: expert.weightedActivationNormSum }
+        : {}),
+      ...(typeof expert.frequency === 'number' ? { frequency: expert.frequency } : {}),
+      ...(typeof expert.eanSum === 'number' ? { eanSum: expert.eanSum } : {}),
+      ...(typeof expert.eanMean === 'number' ? { eanMean: expert.eanMean } : {}),
+      ...(typeof expert.weightedEanSum === 'number'
+        ? { weightedEanSum: expert.weightedEanSum }
+        : {}),
+      ...(typeof expert.reap === 'number' ? { reap: expert.reap } : {}),
+      ...(typeof expert.maxActivation === 'number' ? { maxActivation: expert.maxActivation } : {}),
+      ...(typeof expert.maxActivationNorm === 'number'
+        ? { maxActivationNorm: expert.maxActivationNorm }
         : {}),
       key: `${expert.layer}:${expert.expert}`,
       signal: roundSignal(signal),
@@ -393,11 +502,100 @@ function scoreSaliency(
   };
 }
 
+function buildPreservedExpertKeySet(
+  rankedExperts: ScoredExpert[],
+  options: {
+    preserveSuperExperts: boolean;
+    preserveOutliers: boolean;
+  }
+): Set<string> {
+  if (!options.preserveSuperExperts && !options.preserveOutliers) {
+    return new Set<string>();
+  }
+
+  if (options.preserveSuperExperts && options.preserveOutliers) {
+    throw new Error('preserveSuperExperts and preserveOutliers cannot both be true');
+  }
+
+  const expertsByLayer = new Map<number, ScoredExpert[]>();
+  for (const expert of rankedExperts) {
+    const layerExperts = expertsByLayer.get(expert.layer);
+    if (layerExperts) {
+      layerExperts.push(expert);
+      continue;
+    }
+
+    expertsByLayer.set(expert.layer, [expert]);
+  }
+
+  const allLayers = [...expertsByLayer.keys()].sort((left, right) => left - right);
+  if (allLayers.length === 0) {
+    return new Set<string>();
+  }
+
+  const layerCutoff = options.preserveOutliers
+    ? allLayers.length
+    : Math.floor(allLayers.length * 0.75);
+
+  const eligibleLayers = new Set(allLayers.slice(0, layerCutoff));
+
+  const maxActivations = [] as number[];
+
+  for (const expert of rankedExperts) {
+    const maxActivation = pickFirstFinite(expert.maxActivation, expert.maxActivationNorm);
+    if (typeof maxActivation === 'number') {
+      maxActivations.push(maxActivation);
+    }
+  }
+
+  if (maxActivations.length === 0) {
+    return new Set<string>();
+  }
+
+  maxActivations.sort((left, right) => left - right);
+
+  const quantilePosition = ((maxActivations.length - 1) * 99.5) / 100;
+  const quantileFloor = Math.floor(quantilePosition);
+  const quantileCeil = Math.ceil(quantilePosition);
+  const quantileFloorValue =
+    maxActivations[quantileFloor] ?? maxActivations[maxActivations.length - 1] ?? 0;
+  const quantileCeilValue =
+    maxActivations[quantileCeil] ?? maxActivations[maxActivations.length - 1] ?? 0;
+  const quantileWeight = quantilePosition - quantileFloor;
+  const percentileThreshold =
+    quantileFloorValue + (quantileCeilValue - quantileFloorValue) * quantileWeight;
+  const maxValue = maxActivations[maxActivations.length - 1] ?? 0;
+  const absoluteThreshold = maxValue / 10;
+  const finalThreshold = Math.max(percentileThreshold, absoluteThreshold);
+
+  const preservedKeys = new Set<string>();
+
+  for (const expert of rankedExperts) {
+    if (!eligibleLayers.has(expert.layer)) {
+      continue;
+    }
+
+    const maxActivation = pickFirstFinite(expert.maxActivation, expert.maxActivationNorm);
+    if (typeof maxActivation !== 'number') {
+      continue;
+    }
+
+    if (maxActivation > finalThreshold) {
+      preservedKeys.add(expert.key);
+    }
+  }
+
+  return preservedKeys;
+}
+
 function selectPruning(
   rankedExperts: ScoredExpert[],
   options: {
     targetRatio: number;
     minExpertsPerLayer: number;
+    nExpertsToPrunePerLayer?: number;
+    preserveSuperExperts: boolean;
+    preserveOutliers: boolean;
   }
 ): PruningSelection {
   const expertsByLayer = new Map<number, ScoredExpert[]>();
@@ -411,6 +609,11 @@ function selectPruning(
     }
   }
 
+  const preservedKeys = buildPreservedExpertKeySet(rankedExperts, {
+    preserveSuperExperts: options.preserveSuperExperts,
+    preserveOutliers: options.preserveOutliers
+  });
+
   const prunedExperts = [] as ScoredExpert[];
   const blockedKeys = new Set<string>();
 
@@ -419,19 +622,37 @@ function selectPruning(
 
   for (const layerExperts of expertsByLayer.values()) {
     const sortedLayerExperts = [...layerExperts].sort((left, right) => {
-      if (left.signal !== right.signal) {
-        return left.signal - right.signal;
+      const leftSignal = preservedKeys.has(left.key) ? Number.POSITIVE_INFINITY : left.signal;
+      const rightSignal = preservedKeys.has(right.key) ? Number.POSITIVE_INFINITY : right.signal;
+
+      if (leftSignal !== rightSignal) {
+        return leftSignal - rightSignal;
       }
 
       return left.expert - right.expert;
     });
 
-    const layerRequested = Math.floor(sortedLayerExperts.length * options.targetRatio);
-    const layerMaxPrunable = Math.max(
+    const layerRequested =
+      typeof options.nExpertsToPrunePerLayer === 'number'
+        ? Math.min(sortedLayerExperts.length, options.nExpertsToPrunePerLayer)
+        : Math.floor(sortedLayerExperts.length * options.targetRatio);
+
+    const layerMaxPrunableBySafety = Math.max(
       0,
       sortedLayerExperts.length - options.minExpertsPerLayer
     );
-    const layerTarget = Math.min(layerRequested, layerMaxPrunable);
+    const layerMaxPrunableByPreserve = sortedLayerExperts.filter(
+      (expert) => !preservedKeys.has(expert.key)
+    ).length;
+
+    const layerTarget =
+      typeof options.nExpertsToPrunePerLayer === 'number'
+        ? Math.min(layerRequested, layerMaxPrunableByPreserve)
+        : Math.min(
+            layerRequested,
+            layerMaxPrunableBySafety,
+            layerMaxPrunableByPreserve
+          );
 
     requestedPruneCount += layerRequested;
     targetPruneCount += layerTarget;
@@ -489,6 +710,17 @@ function toDecision(
       : {}),
     ...(typeof expert.weightedActivationNormSum === 'number'
       ? { weightedActivationNormSum: expert.weightedActivationNormSum }
+      : {}),
+    ...(typeof expert.frequency === 'number' ? { frequency: expert.frequency } : {}),
+    ...(typeof expert.eanSum === 'number' ? { eanSum: expert.eanSum } : {}),
+    ...(typeof expert.eanMean === 'number' ? { eanMean: expert.eanMean } : {}),
+    ...(typeof expert.weightedEanSum === 'number'
+      ? { weightedEanSum: expert.weightedEanSum }
+      : {}),
+    ...(typeof expert.reap === 'number' ? { reap: expert.reap } : {}),
+    ...(typeof expert.maxActivation === 'number' ? { maxActivation: expert.maxActivation } : {}),
+    ...(typeof expert.maxActivationNorm === 'number'
+      ? { maxActivationNorm: expert.maxActivationNorm }
       : {}),
     signal: expert.signal,
     rank: expert.rank,

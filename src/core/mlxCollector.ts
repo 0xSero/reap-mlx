@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 
 import mlx.core as mx
+import mlx.nn as nn
 from mlx_lm import load
 
 
@@ -79,29 +80,70 @@ def main():
     for layer_id, layer in enumerate(layers):
         if layer_id in selected_layers:
             h = layer.input_layernorm(hidden)
+            flat_h = h.reshape(-1, h.shape[-1])
+            num_tokens = int(flat_h.shape[0])
 
-            gates = layer.mlp.gate(h)
-            gates = mx.softmax(gates.astype(mx.float32), axis=-1, precise=True)
+            gate = layer.mlp.gate
+            switch = layer.mlp.switch_mlp
+            num_experts = int(layer.mlp.num_experts)
 
+            routing_weights = mx.softmax(gate(flat_h).astype(mx.float32), axis=-1)
             topk = int(layer.mlp.top_k)
-            inds = mx.argpartition(-gates, kth=topk - 1, axis=-1)[..., :topk]
-            scores = mx.take_along_axis(gates, inds, axis=-1)
+            inds = mx.argpartition(-routing_weights, kth=topk - 1, axis=-1)[..., :topk]
+            mx.eval(inds, routing_weights)
 
             if args.renorm_topk:
-                denom = mx.maximum(mx.sum(scores, axis=-1, keepdims=True), 1e-12)
-                scores = scores / denom
+                topk_weights = mx.take_along_axis(routing_weights, inds, axis=-1)
+                denom = mx.maximum(mx.sum(topk_weights, axis=-1, keepdims=True), 1e-12)
+                routing_weights = routing_weights / denom
 
-            expert_out = layer.mlp.switch_mlp(h, inds)
-            expert_norm = mx.sqrt(
-                mx.sum(expert_out.astype(mx.float32) * expert_out.astype(mx.float32), axis=-1)
-            )
+            topk_list = inds.tolist()
+            token_sets = [[] for _ in range(num_experts)]
+            for token_idx in range(num_tokens):
+                for expert_id in topk_list[token_idx]:
+                    token_sets[int(expert_id)].append(token_idx)
 
-            flat_inds = inds.reshape(-1).tolist()
-            flat_scores = scores.reshape(-1).tolist()
-            flat_norms = expert_norm.reshape(-1).tolist()
+            for expert_id in range(num_experts):
+                active_tokens = token_sets[expert_id]
+                if len(active_tokens) == 0:
+                    continue
 
-            for expert_id, gate_val, norm_val in zip(flat_inds, flat_scores, flat_norms):
-                key = (layer_id, int(expert_id))
+                idx = mx.array(active_tokens)
+                active_h = flat_h[idx]
+
+                gp = switch.gate_proj
+                up = switch.up_proj
+                dp = switch.down_proj
+
+                g_w = mx.dequantize(
+                    gp.weight[expert_id:expert_id + 1],
+                    gp.scales[expert_id:expert_id + 1],
+                    gp.biases[expert_id:expert_id + 1],
+                    gp.group_size,
+                    gp.bits,
+                ).squeeze(0)
+                u_w = mx.dequantize(
+                    up.weight[expert_id:expert_id + 1],
+                    up.scales[expert_id:expert_id + 1],
+                    up.biases[expert_id:expert_id + 1],
+                    up.group_size,
+                    up.bits,
+                ).squeeze(0)
+                d_w = mx.dequantize(
+                    dp.weight[expert_id:expert_id + 1],
+                    dp.scales[expert_id:expert_id + 1],
+                    dp.biases[expert_id:expert_id + 1],
+                    dp.group_size,
+                    dp.bits,
+                ).squeeze(0)
+
+                expert_out = (nn.silu(active_h @ g_w.T) * (active_h @ u_w.T)) @ d_w.T
+                ean_norm = mx.sqrt(mx.sum(expert_out * expert_out, axis=-1))
+                active_rw = routing_weights[idx, expert_id]
+                weighted_norm = ean_norm * active_rw
+                mx.eval(ean_norm, active_rw, weighted_norm)
+
+                key = (layer_id, expert_id)
                 entry = stats.get(key)
                 if entry is None:
                     entry = {
@@ -112,10 +154,10 @@ def main():
                     }
                     stats[key] = entry
 
-                entry['activeTokenCount'] += 1
-                entry['gateValueSum'] += float(gate_val)
-                entry['activationNormSum'] += float(norm_val)
-                entry['weightedActivationNormSum'] += float(gate_val) * float(norm_val)
+                entry['activeTokenCount'] += len(active_tokens)
+                entry['gateValueSum'] += float(mx.sum(active_rw).item())
+                entry['activationNormSum'] += float(mx.sum(ean_norm).item())
+                entry['weightedActivationNormSum'] += float(mx.sum(weighted_norm).item())
 
         hidden = layer(hidden, mask=mask)
 

@@ -20,7 +20,7 @@ describe('reap components saliency', () => {
           weightedActivationNormSum: 2
         }
       ],
-      { allowLegacySaliency: false }
+      { allowLegacySaliency: false, pruneMethod: 'reap' }
     );
 
     expect(scored.legacyFallbackUsed).toBe(false);
@@ -41,7 +41,7 @@ describe('reap components saliency', () => {
           tokenCount: 10
         }
       ],
-      { allowLegacySaliency: true }
+      { allowLegacySaliency: true, pruneMethod: 'reap' }
     );
 
     expect(scored.legacyFallbackUsed).toBe(true);
@@ -60,9 +60,9 @@ describe('reap components saliency', () => {
             tokenCount: 5
           }
         ],
-        { allowLegacySaliency: false }
+        { allowLegacySaliency: false, pruneMethod: 'reap' }
       )
-    ).toThrow(/Missing REAP saliency fields/i);
+    ).toThrow(/Missing saliency fields/i);
   });
 });
 
@@ -75,12 +75,14 @@ describe('reap components planning', () => {
         { layer: 1, expert: 0, activeTokenCount: 2, weightedActivationNormSum: 0.1 },
         { layer: 1, expert: 1, activeTokenCount: 2, weightedActivationNormSum: 0.4 }
       ],
-      { allowLegacySaliency: false }
+      { allowLegacySaliency: false, pruneMethod: 'reap' }
     );
 
     const selection = components.selectPruning(saliency.scoredExperts, {
       targetRatio: 0.75,
-      minExpertsPerLayer: 1
+      minExpertsPerLayer: 1,
+      preserveSuperExperts: false,
+      preserveOutliers: false
     });
 
     expect(selection.requestedPruneCount).toBe(2);
@@ -91,5 +93,34 @@ describe('reap components planning', () => {
     expect(decisions.pruned.length).toBe(2);
     expect(decisions.pruned.every((entry) => entry.reason === 'low_signal_pruned')).toBe(true);
     expect(decisions.kept.every((entry) => entry.reason !== 'low_signal_pruned')).toBe(true);
+  });
+
+  it('prunes exact count per layer when nExpertsToPrunePerLayer is set', () => {
+    const saliency = components.scoreSaliency(
+      [
+        { layer: 0, expert: 0, frequency: 1 },
+        { layer: 0, expert: 1, frequency: 2 },
+        { layer: 0, expert: 2, frequency: 3 },
+        { layer: 1, expert: 0, frequency: 4 },
+        { layer: 1, expert: 1, frequency: 5 },
+        { layer: 1, expert: 2, frequency: 6 }
+      ],
+      { allowLegacySaliency: false, pruneMethod: 'frequency' }
+    );
+
+    const selection = components.selectPruning(saliency.scoredExperts, {
+      targetRatio: 0.01,
+      minExpertsPerLayer: 1,
+      nExpertsToPrunePerLayer: 2,
+      preserveSuperExperts: false,
+      preserveOutliers: false
+    });
+
+    expect(selection.prunedExperts.map((entry) => `${entry.layer}:${entry.expert}`)).toEqual([
+      '0:0',
+      '0:1',
+      '1:0',
+      '1:1'
+    ]);
   });
 });

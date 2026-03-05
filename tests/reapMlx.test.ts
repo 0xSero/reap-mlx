@@ -71,6 +71,7 @@ describe('runReapMlx', () => {
       targetRatio: 0.5,
       calibrationRounds: 2,
       allowLegacySaliency: false,
+      pruneMethod: 'reap',
       jobId: 'job-test'
     });
 
@@ -113,7 +114,8 @@ describe('runReapMlx', () => {
       outputDir,
       targetRatio: 0.9,
       calibrationRounds: 1,
-      allowLegacySaliency: false
+      allowLegacySaliency: false,
+      pruneMethod: 'reap'
     });
 
     expect(plan.stats.prunedExperts).toBe(0);

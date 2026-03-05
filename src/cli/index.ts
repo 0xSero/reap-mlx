@@ -16,7 +16,12 @@ import {
   ensureSecureDir,
   writeJsonAtomicSafe
 } from '../core/security.js';
-import type { ModelTelemetry, ObservationSummary, PruningPlan } from '../core/types.js';
+import type {
+  ModelTelemetry,
+  ObservationSummary,
+  PruneMethod,
+  PruningPlan
+} from '../core/types.js';
 
 type CliOptions = Map<string, string | boolean>;
 
@@ -42,15 +47,19 @@ Commands:
   version   Print version
 
 run options:
-  --model <file>           Telemetry JSON input file
-  --output <dir>           Output directory for plan + logs
-  --ratio <0..0.95>        Target prune ratio
-  --calibration <1..25>    Calibration rounds (default: 2)
-  --min-experts <1..128>   Minimum experts preserved per layer (default: 1)
-  --no-legacy              Require REAP saliency fields (disable activationScore fallback)
-  --job-id <id>            Optional job id
-  --observation <name>     Observation filename (default: observation.log)
-  --json                   Output full result as JSON
+  --model <file>                    Telemetry JSON input file
+  --output <dir>                    Output directory for plan + logs
+  --ratio <0..0.95>                 Target prune ratio
+  --calibration <1..25>             Calibration rounds (default: 2)
+  --min-experts <1..128>            Minimum experts preserved per layer (default: 1)
+  --prune-method <name>             Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+  --n-experts-to-prune-per-layer <n> Prune exactly n experts per layer (bounded by layer size)
+  --preserve-super-experts          Preserve super experts from pruning mask
+  --preserve-outliers               Preserve outlier experts (include all layers)
+  --no-legacy                       Require REAP saliency fields (disable activationScore fallback)
+  --job-id <id>                     Optional job id
+  --observation <name>              Observation filename (default: observation.log)
+  --json                            Output full result as JSON
 
 collect options:
   --model <dir>            Local MLX model directory
@@ -158,6 +167,29 @@ function optionBoolean(options: CliOptions, key: string): boolean {
   return options.get(key) === true;
 }
 
+function parsePruneMethod(value: string | undefined): PruneMethod | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  const allowed = new Set<PruneMethod>([
+    'reap',
+    'frequency',
+    'ean_sum',
+    'ean_mean',
+    'weighted_ean_sum'
+  ]);
+
+  if (!allowed.has(normalized as PruneMethod)) {
+    throw new Error(
+      `Invalid --prune-method value: ${value}. Expected one of reap, frequency, ean_sum, ean_mean, weighted_ean_sum`
+    );
+  }
+
+  return normalized as PruneMethod;
+}
+
 function createRng(seedInput: number): () => number {
   let state = seedInput >>> 0;
 
@@ -211,6 +243,7 @@ function printRunSummary(plan: PruningPlan): void {
       `jobId: ${plan.jobId}`,
       `model: ${plan.modelName}`,
       `target ratio: ${plan.targetRatio}`,
+      `method: ${plan.saliencyMethod}`,
       `achieved ratio: ${plan.achievedRatio}`,
       `pruned experts: ${plan.stats.prunedExperts}/${plan.stats.totalExperts}`,
       `threshold: ${plan.threshold}`,
@@ -249,7 +282,11 @@ async function ensureFileReadable(filePath: string): Promise<void> {
 async function handleRun(options: CliOptions): Promise<void> {
   const modelPath = requiredOption(options, 'model');
   const outputDir = requiredOption(options, 'output');
-  const targetRatio = assertFiniteNumber(requiredOption(options, 'ratio'), 'ratio', 0, 0.95);
+  const ratioOption = optionString(options, 'ratio');
+  const targetRatio =
+    typeof ratioOption === 'string'
+      ? assertFiniteNumber(ratioOption, 'ratio', 0, 0.95)
+      : undefined;
   const calibration = optionString(options, 'calibration');
   const calibrationRounds =
     typeof calibration === 'string'
@@ -262,6 +299,29 @@ async function handleRun(options: CliOptions): Promise<void> {
       : undefined;
 
   const allowLegacySaliency = !optionBoolean(options, 'no-legacy');
+  const pruneMethod = parsePruneMethod(optionString(options, 'prune-method'));
+  const nExpertsToPrunePerLayerOption = optionString(options, 'n-experts-to-prune-per-layer');
+  const nExpertsToPrunePerLayer =
+    typeof nExpertsToPrunePerLayerOption === 'string'
+      ? assertInteger(
+          nExpertsToPrunePerLayerOption,
+          'n-experts-to-prune-per-layer',
+          0,
+          10_000
+        )
+      : undefined;
+  const preserveSuperExperts = optionBoolean(options, 'preserve-super-experts');
+  const preserveOutliers = optionBoolean(options, 'preserve-outliers');
+
+  if (preserveSuperExperts && preserveOutliers) {
+    throw new Error('Only one of --preserve-super-experts or --preserve-outliers can be set');
+  }
+
+  if (typeof nExpertsToPrunePerLayer === 'number' && typeof targetRatio === 'undefined') {
+    // accepted: count-driven parity mode
+  } else if (typeof targetRatio === 'undefined') {
+    throw new Error('Missing required option --ratio unless --n-experts-to-prune-per-layer is set');
+  }
 
   const jobId = optionString(options, 'job-id');
   const observationPath = optionString(options, 'observation');
@@ -271,9 +331,15 @@ async function handleRun(options: CliOptions): Promise<void> {
   const runConfig = {
     modelPath,
     outputDir,
-    targetRatio,
+    ...(typeof targetRatio === 'number' ? { targetRatio } : {}),
     ...(typeof calibrationRounds === 'number' ? { calibrationRounds } : {}),
     ...(typeof minExpertsPerLayer === 'number' ? { minExpertsPerLayer } : {}),
+    ...(typeof pruneMethod === 'string' ? { pruneMethod } : {}),
+    ...(typeof nExpertsToPrunePerLayer === 'number'
+      ? { nExpertsToPrunePerLayer }
+      : {}),
+    ...(preserveSuperExperts ? { preserveSuperExperts: true } : {}),
+    ...(preserveOutliers ? { preserveOutliers: true } : {}),
     ...(allowLegacySaliency ? {} : { allowLegacySaliency: false }),
     ...(jobId ? { jobId } : {}),
     ...(observationPath ? { observationPath } : {})

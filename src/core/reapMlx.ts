@@ -8,13 +8,17 @@ import {
   resolveSafePath
 } from './security.js';
 import { createDefaultReapMlxComponents } from './reapComponents.js';
-import type { PruningPlan, RunConfig } from './types.js';
+import type { PruneMethod, PruningPlan, RunConfig } from './types.js';
 
 const DEFAULT_CALIBRATION_ROUNDS = 2;
 const DEFAULT_MIN_EXPERTS_PER_LAYER = 1;
+const DEFAULT_PRUNE_METHOD: PruneMethod = 'reap';
 
 export async function runReapMlx(config: RunConfig): Promise<PruningPlan> {
-  const targetRatio = assertFiniteNumber(config.targetRatio, 'targetRatio', 0, 0.95);
+  const targetRatio =
+    typeof config.targetRatio === 'number'
+      ? assertFiniteNumber(config.targetRatio, 'targetRatio', 0, 0.95)
+      : 0;
   const calibrationRounds = assertInteger(
     config.calibrationRounds ?? DEFAULT_CALIBRATION_ROUNDS,
     'calibrationRounds',
@@ -27,6 +31,21 @@ export async function runReapMlx(config: RunConfig): Promise<PruningPlan> {
     1,
     128
   );
+  const pruneMethod = config.pruneMethod ?? DEFAULT_PRUNE_METHOD;
+  const nExpertsToPrunePerLayer =
+    typeof config.nExpertsToPrunePerLayer === 'number'
+      ? assertInteger(config.nExpertsToPrunePerLayer, 'nExpertsToPrunePerLayer', 0, 10_000)
+      : undefined;
+  const preserveSuperExperts = config.preserveSuperExperts ?? false;
+  const preserveOutliers = config.preserveOutliers ?? false;
+
+  if (preserveSuperExperts && preserveOutliers) {
+    throw new Error('preserveSuperExperts and preserveOutliers cannot both be true');
+  }
+
+  if (typeof nExpertsToPrunePerLayer !== 'number' && typeof config.targetRatio !== 'number') {
+    throw new Error('targetRatio is required when nExpertsToPrunePerLayer is not set');
+  }
 
   const allowLegacySaliency = config.allowLegacySaliency ?? true;
 
@@ -53,6 +72,10 @@ export async function runReapMlx(config: RunConfig): Promise<PruningPlan> {
       targetRatio,
       calibrationRounds,
       minExpertsPerLayer,
+      pruneMethod,
+      nExpertsToPrunePerLayer,
+      preserveSuperExperts,
+      preserveOutliers,
       allowLegacySaliency
     }
   });
@@ -67,26 +90,33 @@ export async function runReapMlx(config: RunConfig): Promise<PruningPlan> {
 
   const saliency = await observer.track('score_experts', 'Computed REAP saliency scores', async () =>
     components.scoreSaliency(telemetry.experts, {
-      allowLegacySaliency
+      allowLegacySaliency,
+      pruneMethod
     })
   );
 
   const selection = components.selectPruning(saliency.scoredExperts, {
     targetRatio,
-    minExpertsPerLayer
+    minExpertsPerLayer,
+    ...(typeof nExpertsToPrunePerLayer === 'number' ? { nExpertsToPrunePerLayer } : {}),
+    preserveSuperExperts,
+    preserveOutliers
   });
 
   const decisions = components.buildDecisions(saliency.scoredExperts, selection);
 
   observer.record('plan_pruning', 'Pruning plan computed', {
     data: {
-      saliencyMethod: 'reap',
+      saliencyMethod: pruneMethod,
       legacyFallbackUsed: saliency.legacyFallbackUsed,
       totalExperts: saliency.scoredExperts.length,
       requestedPruneCount: selection.requestedPruneCount,
       effectivePruneCount: decisions.pruned.length,
       targetPruneCount: selection.targetPruneCount,
       minExpertsPerLayer,
+      nExpertsToPrunePerLayer,
+      preserveSuperExperts,
+      preserveOutliers,
       blockedByLayerSafety: selection.blockedByLayerSafety,
       threshold: selection.threshold
     },
@@ -104,7 +134,7 @@ export async function runReapMlx(config: RunConfig): Promise<PruningPlan> {
         ? 0
         : Number((decisions.pruned.length / saliency.scoredExperts.length).toFixed(6)),
     calibrationRounds,
-    saliencyMethod: 'reap',
+    saliencyMethod: pruneMethod,
     minExpertsPerLayer,
     legacyFallbackUsed: saliency.legacyFallbackUsed,
     threshold: selection.threshold,

@@ -10,6 +10,13 @@ export type ObservationStage =
 
 export type ObservationLevel = 'info' | 'warn' | 'error';
 
+export type PruneMethod =
+  | 'reap'
+  | 'frequency'
+  | 'ean_sum'
+  | 'ean_mean'
+  | 'weighted_ean_sum';
+
 export interface ExpertSignal {
   layer: number;
   expert: number;
@@ -21,6 +28,13 @@ export interface ExpertSignal {
   gateValueSum?: number;
   activationNormSum?: number;
   weightedActivationNormSum?: number;
+  frequency?: number;
+  eanSum?: number;
+  eanMean?: number;
+  weightedEanSum?: number;
+  reap?: number;
+  maxActivation?: number;
+  maxActivationNorm?: number;
 }
 
 export type TelemetryMetadataValue =
@@ -41,6 +55,11 @@ export type DecisionReason =
   | 'high_signal_retained';
 
 export type SaliencySource =
+  | 'reap'
+  | 'frequency'
+  | 'ean_sum'
+  | 'ean_mean'
+  | 'weighted_ean_sum'
   | 'weighted_activation_sum'
   | 'mean_gate_x_norm'
   | 'mean_gate_x_norm_from_sums'
@@ -62,7 +81,7 @@ export interface PruningPlan {
   targetRatio: number;
   achievedRatio: number;
   calibrationRounds: number;
-  saliencyMethod: 'reap';
+  saliencyMethod: PruneMethod;
   minExpertsPerLayer: number;
   legacyFallbackUsed: boolean;
   threshold: number;
@@ -79,9 +98,13 @@ export interface PruningPlan {
 export interface RunConfig {
   modelPath: string;
   outputDir: string;
-  targetRatio: number;
+  targetRatio?: number;
   calibrationRounds?: number;
   minExpertsPerLayer?: number;
+  pruneMethod?: PruneMethod;
+  nExpertsToPrunePerLayer?: number;
+  preserveSuperExperts?: boolean;
+  preserveOutliers?: boolean;
   allowLegacySaliency?: boolean;
   jobId?: string;
   observationPath?: string;
