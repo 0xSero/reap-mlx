@@ -46,6 +46,9 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm import load
 
+NEWLINE = chr(10)
+DOUBLE_NEWLINE = NEWLINE * 2
+
 
 def parse_layers(spec, max_layers):
     if spec is None or spec.strip() == "":
@@ -133,7 +136,7 @@ def iter_dataset_rows(args):
         if dataset_format == 'text':
             with open(dataset_file, 'r', encoding='utf8') as handle:
                 for line in handle:
-                    text = line.rstrip('\n')
+                    text = line.rstrip(NEWLINE)
                     yield {'text': text, 'instruction': text}
             return
 
@@ -195,7 +198,7 @@ def render_messages(messages, tokenizer):
     if len(rendered) == 0:
         return None
 
-    return "\n\n".join(rendered)
+    return DOUBLE_NEWLINE.join(rendered)
 
 
 def fallback_text(sample):
@@ -206,7 +209,7 @@ def fallback_text(sample):
         if isinstance(value, str) and value.strip() != '':
             return value.strip()
         if isinstance(value, list):
-            joined = '\n'.join(str(part) for part in value if str(part).strip() != '')
+            joined = NEWLINE.join(str(part) for part in value if str(part).strip() != '')
             if joined.strip() != '':
                 return joined.strip()
     return None
@@ -229,7 +232,7 @@ def extract_sample_text(sample, args, tokenizer):
         return None
 
     if isinstance(raw_text, list):
-        text = '\n'.join(str(part) for part in raw_text)
+        text = NEWLINE.join(str(part) for part in raw_text)
     elif isinstance(raw_text, dict):
         text = json.dumps(raw_text, ensure_ascii=False)
     else:
@@ -245,7 +248,7 @@ def extract_sample_text(sample, args, tokenizer):
 def get_separator_token_ids(tokenizer):
     if getattr(tokenizer, 'eos_token_id', None) is not None:
         return [int(tokenizer.eos_token_id)]
-    return tokenizer.encode('\n\n')
+    return tokenizer.encode(DOUBLE_NEWLINE)
 
 
 def get_pad_token_id(tokenizer):
@@ -678,7 +681,7 @@ def main():
 
     with open(args.output, 'w') as f:
         json.dump(payload, f, indent=2)
-        f.write('\n')
+        f.write(NEWLINE)
 
     print(args.output)
 
@@ -872,7 +875,8 @@ export function buildMlxCollectArgs(config: MlxCollectConfig, telemetryPath: str
 }
 
 export const __testOnly = {
-  buildMlxCollectArgs
+  buildMlxCollectArgs,
+  pythonScript
 };
 
 function throwIfFailed(result: SpawnSyncReturns<string>, commandPreview: string): void {

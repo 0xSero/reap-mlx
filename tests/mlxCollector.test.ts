@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { __testOnly } from '../src/core/mlxCollector.js';
 
@@ -115,5 +116,19 @@ describe('mlxCollector args', () => {
         '/tmp/out/telemetry.json'
       )
     ).toThrow(/collectMode/);
+  });
+
+  it('emits syntactically valid embedded python', () => {
+    const result = spawnSync(
+      'python3',
+      ['-c', 'import ast,sys; ast.parse(sys.stdin.read())'],
+      {
+        input: __testOnly.pythonScript(),
+        encoding: 'utf8'
+      }
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
   });
 });
