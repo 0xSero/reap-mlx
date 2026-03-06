@@ -2,28 +2,45 @@
 
 REAP pruning for MLX MoE models on Apple Silicon.
 
-If you want the shortest mental model:
+The shortest version:
 
 ```text
-collect telemetry -> run planner -> apply pruning plan
+collect telemetry -> build a pruning plan -> apply the plan
 ```
 
-This repo ports the pruning part of [Cerebras REAP](https://github.com/CerebrasResearch/reap) to local MLX workflows.
+This repo ports the pruning side of [Cerebras REAP](https://github.com/CerebrasResearch/reap) to local MLX workflows. It is built for people who want to calibrate on real data, inspect the telemetry, and physically write a smaller MLX checkpoint.
 
-## 60-second quick start
+## what it does today
+
+- Collects per-expert telemetry from an MLX MoE model.
+- Builds a pruning plan with REAP or simpler scoring rules.
+- Applies that plan to an MLX checkpoint.
+- Compares two telemetry files under the same prune config with an exact parity report.
+- Supports prompt calibration, Hugging Face datasets, and local dataset files.
+- Supports lower-memory collection modes, token chunking, sample mini-batching, packing, and chat-style calibration rows.
+
+## what it does not do yet
+
+- It does not stream checkpoint writeback layer-by-layer during `apply`. Collection can run in lower-memory modes, but apply still loads the model normally.
+- It does not ship a full benchmark harness in the repo. You still need to run before/after evals yourself.
+
+## quick start
 
 Requirements:
 - Apple Silicon Mac
-- Node 20+, pnpm
+- Node 20+
+- pnpm
 - Python 3.11+
-- `mlx` and `mlx_lm` installed
+- `mlx` and `mlx_lm`
+
+Install and build:
 
 ```bash
 pnpm install
 pnpm build
 ```
 
-### 1) Collect telemetry
+### 1) collect telemetry from a JSONL dataset
 
 ```bash
 node dist/cli/index.js collect \
@@ -42,7 +59,7 @@ node dist/cli/index.js collect \
   --lazy-load
 ```
 
-### 2) Build pruning plan
+### 2) build a pruning plan
 
 ```bash
 node dist/cli/index.js run \
@@ -53,7 +70,7 @@ node dist/cli/index.js run \
   --no-legacy
 ```
 
-### 3) Apply pruning
+### 3) apply pruning
 
 ```bash
 node dist/cli/index.js apply \
@@ -62,178 +79,266 @@ node dist/cli/index.js apply \
   --output ./tmp/pruned-model
 ```
 
-Use `--dry-run` on `apply` to validate a plan without writing a new checkpoint.
+Use `--dry-run` on `apply` if you want to validate the plan before writing a new checkpoint.
 
-## What each command does
+## command overview
 
-- `collect`: runs prompt or dataset calibration and saves per-expert routing + activation stats.
-- `run`: scores experts from telemetry and writes `pruning-plan.json`.
-- `parity`: runs the same prune config against two telemetry files and diffs the exact prune set.
-- `apply`: physically removes pruned experts from the MLX checkpoint.
-- `observe`: summarizes run observation logs.
-- `init`: creates synthetic telemetry for local testing.
+- `collect`: run prompt or dataset calibration and write telemetry JSON.
+- `run`: score experts from telemetry and write `pruning-plan.json`.
+- `parity`: run the same prune config against two telemetry files and diff the exact prune set.
+- `full`: run `collect -> run -> apply` in one command.
+- `apply`: remove pruned experts from the MLX checkpoint.
+- `observe`: summarize an observation log.
+- `init`: generate synthetic telemetry for local testing.
 
-## REAP saliency used
+## how calibration works
 
-For each expert `j`:
+You can calibrate with exactly one input source per run:
+
+- `--prompt <text>`
+- `--dataset <huggingface-name>`
+- `--dataset-file <path>`
+
+Local dataset files support:
+
+- `json`
+- `jsonl`
+- `csv`
+- `parquet`
+- plain `text`
+
+Useful controls:
+
+- `--max-samples <n>` limits how many rows are processed.
+- `--min-samples <n>` fails the run if too many rows were unusable.
+- `--max-tokens <n>` limits how much of each sample is processed.
+- `--dataset-text-field <field.path>` selects a text field.
+- `--dataset-messages-field <field.path>` renders chat-style rows through the tokenizer chat template when available.
+
+That means you are not stuck with one-off prompts. You can hand the collector a real dataset and bound both sample count and per-sample length.
+
+## batching and memory modes
+
+There are three different knobs here, and they are not the same thing.
+
+### sample mini-batching
+
+`--sample-batch-size <n>` batches multiple independent samples or conversations into one model pass.
+
+Use this when the goal is throughput on a larger calibration set.
+
+### dataset packing
+
+`--pack-samples` packs multiple independent short samples into fuller context windows.
+
+Use this when your dataset has lots of short rows and you do not need one-row-per-window isolation.
+
+### token chunking inside collection
+
+`--batch-size <n>` chunks flattened token activations inside expert scoring.
+
+Use this when collection is running hot on memory.
+
+### collection modes
+
+`collect` and `full` support these modes:
+
+- `single_pass`: the original behavior
+- `replay_per_layer`: replay hidden states layer-by-layer in one process
+- `reload_per_layer`: rerun one selected layer per collector process, then merge telemetry
+
+`reload_per_layer` is the lowest-memory observation mode in this repo today. It is slower, but it cuts working-set pressure enough to make some runs practical on smaller machines.
+
+`--layer-wise` remains as shorthand for the layer replay path.
+
+`--lazy-load` asks MLX to defer parameter materialization during load. Pair it with `reload_per_layer` when you want the most conservative collection profile.
+
+## pruning methods
+
+This project supports:
+
+- `reap`
+- `frequency`
+- `ean_sum`
+- `ean_mean`
+- `weighted_ean_sum`
+
+The REAP-style score used here is:
 
 ```text
 saliency_j = mean( g_j(x) * ||f_j(x)|| )
 ```
 
-- `g_j(x)`: router softmax weight for expert `j`
-- `f_j(x)`: expert output
-- Mean is over tokens routed to that expert
+Where:
 
-This is the REAP-style scoring used for pruning decisions in this project.
+- `g_j(x)` is the router softmax weight for expert `j`
+- `f_j(x)` is the expert output
+- the mean is taken over routed tokens for that expert
 
-## CLI reference (minimal)
+## exact prune parity
 
-### collect
-
-```text
---model <dir>       MLX model directory
---output <dir>      Telemetry output directory
---prompt <text>     Calibration text
---dataset <name>    HuggingFace dataset name
---dataset-file <path> Local calibration dataset file
---dataset-format <fmt> auto|json|jsonl|csv|parquet|text
---dataset-split     Dataset split (default: train)
---dataset-text-field Field path for text (default: auto common fields)
---dataset-messages-field Field path for chat message arrays
---max-samples <n>   Max dataset samples to aggregate (default: 100)
---min-samples <n>   Require at least n usable samples (default: 1)
---max-tokens <n>    Token cap (default: 256)
---sample-batch-size <n> Batch multiple samples/conversations together
---pack-samples      Pack multiple independent samples into max-tokens windows
---layers <spec>     Example: "0-3,8,10"
---renorm-topk       Renormalize top-k gate weights
---layer-wise        Re-run forward passes per selected layer before scoring
---collect-mode <name> single_pass|replay_per_layer|reload_per_layer
---batch-size <n>    Chunk flattened token activations during scoring
---lazy-load         Ask MLX to lazily materialize weights during load
---python <bin>      Python binary (default: python3)
-```
-
-Notes:
-- Use exactly one of `--prompt`, `--dataset`, or `--dataset-file`.
-- `--dataset-file` supports local `json`, `jsonl`, `csv`, `parquet`, and plain `text`.
-- `--dataset-messages-field` renders multi-turn samples through the tokenizer chat template when available.
-- `--sample-batch-size` is real multi-sample mini-batching.
-- `--pack-samples` packs independent samples to fill context windows more efficiently.
-- `--batch-size` is token-chunking inside expert scoring.
-- `--collect-mode reload_per_layer` is the lowest-memory observation mode in this repo today: it re-runs one layer at a time and writes a merged telemetry file at the end. It reduces working-set pressure, but it is slower.
-- `--lazy-load` asks MLX to defer parameter materialization; use it with `reload_per_layer` when you want the most conservative memory profile.
-
-### full
+If you are trying to answer this question:
 
 ```text
---model <dir>       MLX model directory
---output <dir>      Pipeline output directory
---prompt <text>     Calibration text
---dataset <name>    HuggingFace dataset name
---dataset-file <path> Local calibration dataset file
---dataset-format <fmt> auto|json|jsonl|csv|parquet|text
---dataset-split     Dataset split (default: train)
---dataset-text-field Field path for text (default: auto common fields)
---dataset-messages-field Field path for chat message arrays
---max-samples <n>   Max dataset samples to aggregate (default: 100)
---min-samples <n>   Require at least n usable samples (default: 1)
---max-tokens <n>    Token cap (default: 256)
---sample-batch-size <n> Batch multiple samples/conversations together
---pack-samples      Pack multiple independent samples into max-tokens windows
---layers <spec>     Example: "0-3,8,10"
---renorm-topk       Renormalize top-k gate weights
---layer-wise        Re-run forward passes per selected layer before scoring
---collect-mode <name> single_pass|replay_per_layer|reload_per_layer
---batch-size <n>    Chunk flattened token activations during scoring
---lazy-load         Ask MLX to lazily materialize weights during load
---ratio <0..0.95>   Target prune ratio per layer
---min-experts <n>   Minimum experts kept per layer
---dry-run           Validate plan only
+same exact telemetry + same exact prune config => same exact experts pruned?
 ```
 
-### run
-
-```text
---model <file>      Telemetry JSON from collect
---output <dir>      Plan + observation output directory
---ratio <0..0.95>   Target prune ratio per layer
---calibration <n>   Calibration rounds (default: 2)
---min-experts <n>   Minimum experts kept per layer
---no-legacy         Disable fallback saliency fields
---json              Print plan JSON to stdout
-```
-
-### parity
-
-```text
---left <file>                      Left telemetry JSON
---right <file>                     Right telemetry JSON
---output <dir>                     Output directory for left/right plans + parity report
---ratio <0..0.95>                  Target prune ratio per layer
---n-experts-to-prune-per-layer <n> Prune exactly n experts per layer
---prune-method <name>              reap|frequency|ean_sum|ean_mean|weighted_ean_sum
---require-identical-telemetry      Fail unless normalized telemetry hashes match exactly
---json                             Print parity report JSON to stdout
-```
-
-Use `parity` when the question is:
-
-```text
-same exact telemetry + same prune config => same exact experts pruned?
-```
-
-It writes `parity-report.json` and `parity-report.md` with:
-- normalized telemetry hashes
-- first differing expert row
-- exact prune-set diff
-- per-layer expert deltas
-
-### apply
-
-```text
---model <dir>       Source MLX model
---plan <file>       pruning-plan.json
---output <dir>      Pruned model output
---dry-run           Validate plan only
-```
-
-### observe
-
-```text
---file <path>       Observation log file
---json              JSON output
-```
-
-### init
-
-```text
---output <file>     Synthetic telemetry output
---model-name <name> Default: synthetic-moe
---layers <n>        Default: 8
---experts <n>       Default: 8
---seed <int>        RNG seed
-```
-
-## Current scope and limits
-
-- Supports `switch_mlp`-style MLX MoE checkpoints (e.g., Qwen MoE / Mixtral-style), including full-precision and quantized expert weights in the collector.
-- Focused on pruning only.
-- The new `reload_per_layer` mode lowers observation memory pressure, but it is still not true disk-streamed per-layer checkpoint loading for apply/writeback.
-- No evaluation harness in this repo.
-
-If you want the full research stack (evaluation + additional compression strategies), use the upstream Cerebras repo.
-
-## Dev
+Use `parity`.
 
 ```bash
-pnpm verify
-pnpm test
-pnpm lint
+node dist/cli/index.js parity \
+  --left ./left.telemetry.json \
+  --right ./right.telemetry.json \
+  --output ./tmp/parity \
+  --prune-method reap \
+  --n-experts-to-prune-per-layer 15 \
+  --min-experts 1 \
+  --no-legacy \
+  --require-identical-telemetry
 ```
 
-## References
+It writes:
+
+- `parity-report.json`
+- `parity-report.md`
+- left and right pruning outputs under the output directory
+
+The report includes:
+
+- normalized telemetry hashes
+- the first differing expert row
+- the exact prune-set diff
+- per-layer expert deltas
+
+This is the cleanest correctness check in the repo. If telemetry is identical and the prune sets differ, something is wrong.
+
+## minimal CLI reference
+
+### `collect`
+
+```text
+--model <dir>                    MLX model directory
+--output <dir>                   Telemetry output directory
+--prompt <text>                  Single calibration text
+--dataset <name>                 HuggingFace dataset name
+--dataset-file <path>            Local calibration dataset file
+--dataset-format <fmt>           auto|json|jsonl|csv|parquet|text
+--dataset-split <name>           Dataset split (default: train)
+--dataset-text-field <field>     Text field path
+--dataset-messages-field <field> Chat messages array field path
+--max-samples <n>                Max dataset samples to aggregate (default: 100)
+--min-samples <n>                Require at least n usable samples (default: 1)
+--max-tokens <n>                 Per-sample token cap (default: 256)
+--sample-batch-size <n>          Batch multiple samples or conversations together
+--pack-samples                   Pack short independent samples into fuller windows
+--layers <spec>                  Example: 0-3,8,10
+--renorm-topk                    Renormalize top-k gate weights to sum to 1
+--layer-wise                     Enable layer-wise collection mode
+--collect-mode <name>            single_pass|replay_per_layer|reload_per_layer
+--batch-size <n>                 Token chunk size for collection batching
+--lazy-load                      Ask MLX to lazily materialize weights during load
+--python <bin>                   Python binary (default: python3)
+```
+
+### `full`
+
+```text
+--model <dir>                    MLX model directory
+--output <dir>                   Pipeline output directory
+--prompt <text>                  Single calibration text
+--dataset <name>                 HuggingFace dataset name
+--dataset-file <path>            Local calibration dataset file
+--dataset-format <fmt>           auto|json|jsonl|csv|parquet|text
+--dataset-split <name>           Dataset split (default: train)
+--dataset-text-field <field>     Text field path
+--dataset-messages-field <field> Chat messages array field path
+--max-samples <n>                Max dataset samples to aggregate (default: 100)
+--min-samples <n>                Require at least n usable samples (default: 1)
+--max-tokens <n>                 Per-sample token cap (default: 256)
+--sample-batch-size <n>          Batch multiple samples or conversations together
+--pack-samples                   Pack short independent samples into fuller windows
+--layers <spec>                  Example: 0-3,8,10
+--renorm-topk                    Renormalize top-k gate weights to sum to 1
+--layer-wise                     Enable layer-wise collection mode
+--collect-mode <name>            single_pass|replay_per_layer|reload_per_layer
+--batch-size <n>                 Token chunk size for collection batching
+--lazy-load                      Ask MLX to lazily materialize weights during load
+--ratio <0..0.95>                Target prune ratio per layer
+--min-experts <n>                Minimum experts kept per layer
+--dry-run                        Validate apply step without writing pruned model
+```
+
+### `run`
+
+```text
+--model <file>                   Telemetry JSON from collect
+--output <dir>                   Plan and observation output directory
+--ratio <0..0.95>                Target prune ratio per layer
+--calibration <n>                Calibration rounds (default: 2)
+--min-experts <n>                Minimum experts kept per layer
+--no-legacy                      Require REAP saliency fields
+--json                           Print plan JSON to stdout
+```
+
+### `parity`
+
+```text
+--left <file>                    Left telemetry JSON
+--right <file>                   Right telemetry JSON
+--output <dir>                   Output directory for left/right plans and parity report
+--ratio <0..0.95>                Target prune ratio per layer
+--n-experts-to-prune-per-layer <n>
+--prune-method <name>            reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+--require-identical-telemetry    Fail unless normalized telemetry hashes match exactly
+--json                           Print parity report JSON to stdout
+```
+
+### `apply`
+
+```text
+--model <dir>                    Source MLX model
+--plan <file>                    pruning-plan.json
+--output <dir>                   Pruned model output
+--dry-run                        Validate plan only
+```
+
+### `observe`
+
+```text
+--file <path>                    Observation log file
+--json                           JSON output
+```
+
+### `init`
+
+```text
+--output <file>                  Synthetic telemetry output
+--model-name <name>              Default: synthetic-moe
+--layers <n>                     Default: 8
+--experts <n>                    Default: 8
+--seed <int>                     RNG seed
+```
+
+## current scope and limits
+
+- This repo is focused on pruning MLX MoE checkpoints, not on being a full research harness.
+- It supports `switch_mlp`-style MLX MoE checkpoints, including full-precision and quantized expert weights in the collector.
+- Lower-memory collection is here now. Lower-memory apply is not.
+- The repo has planner tests, collector wiring tests, and an exact parity harness.
+- The repo still does not include a built-in benchmark suite for pruned versus unpruned models.
+
+If you want a broader research stack, including full evaluation workflows and other compression paths, use the upstream Cerebras repo.
+
+## development
+
+```bash
+pnpm lint
+pnpm build
+pnpm test
+pnpm verify
+```
+
+## references
 
 - Paper: https://arxiv.org/abs/2510.13999
 - Cerebras implementation: https://github.com/CerebrasResearch/reap
