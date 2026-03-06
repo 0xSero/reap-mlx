@@ -11,6 +11,7 @@ import {
   runReapMlx,
   summarizeObservationLog
 } from '../core/index.js';
+import type { CollectMode, DatasetFormat, MlxCollectConfig } from '../core/mlxCollector.js';
 import {
   assertFiniteNumber,
   assertInteger,
@@ -30,6 +31,11 @@ interface ParsedCli {
   command: string;
   options: CliOptions;
   positionals: string[];
+}
+
+interface CollectCliConfig extends MlxCollectConfig {
+  outputDir: string;
+  modelPath: string;
 }
 
 function printUsage(): void {
@@ -84,28 +90,45 @@ collect options:
   --output <dir>           Output directory for telemetry JSON
   --prompt <text>          Single calibration text
   --dataset <name>         HuggingFace dataset name (full-runner mode)
+  --dataset-file <path>    Local calibration dataset file
+  --dataset-format <fmt>   auto|json|jsonl|csv|parquet|text (dataset-file only)
   --dataset-split <name>   Dataset split (default: train)
-  --dataset-text-field <f> Field to read text from (default: instruction)
+  --dataset-text-field <f> Field path for text (default: auto common fields)
+  --dataset-messages-field <f> Field path for chat messages array
   --max-samples <n>        Max dataset samples to aggregate (default: 100)
+  --min-samples <n>        Require at least n usable samples (default: 1)
   --max-tokens <1..8192>   Per-sample token cap (default: 256)
+  --sample-batch-size <1..1024> Batch multiple samples/conversations together
+  --pack-samples           Pack multiple independent samples into max-tokens windows
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
   --renorm-topk            Renormalize top-k gate weights to sum to 1
   --layer-wise             Enable layer-wise collection mode
+  --collect-mode <name>    single_pass|replay_per_layer|reload_per_layer
   --batch-size <1..8192>   Token chunk size for collection batching
+  --lazy-load              Ask MLX to lazily materialize weights during load
   --python <bin>           Python binary (default: python3)
 
 full options:
   --model <dir>            Local MLX model directory
   --output <dir>           Pipeline output directory
+  --prompt <text>          Single calibration text
   --dataset <name>         HuggingFace dataset name
+  --dataset-file <path>    Local calibration dataset file
+  --dataset-format <fmt>   auto|json|jsonl|csv|parquet|text (dataset-file only)
   --dataset-split <name>   Dataset split (default: train)
-  --dataset-text-field <f> Field to read text from (default: instruction)
+  --dataset-text-field <f> Field path for text (default: auto common fields)
+  --dataset-messages-field <f> Field path for chat messages array
   --max-samples <n>        Max dataset samples to aggregate (default: 100)
+  --min-samples <n>        Require at least n usable samples (default: 1)
   --max-tokens <1..8192>   Per-sample token cap (default: 256)
+  --sample-batch-size <1..1024> Batch multiple samples/conversations together
+  --pack-samples           Pack multiple independent samples into max-tokens windows
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
   --renorm-topk            Renormalize top-k gate weights to sum to 1
   --layer-wise             Enable layer-wise collection mode
+  --collect-mode <name>    single_pass|replay_per_layer|reload_per_layer
   --batch-size <1..8192>   Token chunk size for collection batching
+  --lazy-load              Ask MLX to lazily materialize weights during load
   --ratio <0..0.95>        Target prune ratio (default: 0.5)
   --min-experts <1..128>   Minimum experts preserved per layer (default: 1)
   --prune-method <name>    Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
@@ -235,6 +258,186 @@ function parsePruneMethod(value: string | undefined): PruneMethod | undefined {
   }
 
   return normalized as PruneMethod;
+}
+
+function parseDatasetFormat(value: string | undefined): DatasetFormat | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  const allowed = new Set<DatasetFormat>(['auto', 'json', 'jsonl', 'csv', 'parquet', 'text']);
+
+  if (!allowed.has(normalized as DatasetFormat)) {
+    throw new Error(
+      `Invalid --dataset-format value: ${value}. Expected one of auto, json, jsonl, csv, parquet, text`
+    );
+  }
+
+  return normalized as DatasetFormat;
+}
+
+function parseCollectMode(value: string | undefined): CollectMode | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  const allowed = new Set<CollectMode>([
+    'single_pass',
+    'replay_per_layer',
+    'reload_per_layer'
+  ]);
+
+  if (!allowed.has(normalized as CollectMode)) {
+    throw new Error(
+      `Invalid --collect-mode value: ${value}. Expected one of single_pass, replay_per_layer, reload_per_layer`
+    );
+  }
+
+  return normalized as CollectMode;
+}
+
+function buildCollectConfigFromOptions(options: CliOptions, base: {
+  modelPath: string;
+  outputDir: string;
+}): CollectCliConfig {
+  const prompt = optionString(options, 'prompt');
+  const datasetName = optionString(options, 'dataset');
+  const datasetFile = optionString(options, 'dataset-file');
+  const inputSources = [prompt, datasetName, datasetFile].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0
+  );
+
+  if (inputSources.length !== 1) {
+    throw new Error('Use exactly one of --prompt, --dataset, or --dataset-file');
+  }
+
+  const datasetFormat = parseDatasetFormat(optionString(options, 'dataset-format'));
+  if (datasetFormat && !datasetFile) {
+    throw new Error('--dataset-format requires --dataset-file');
+  }
+
+  const datasetSplit = optionString(options, 'dataset-split') ?? 'train';
+  const datasetTextField = optionString(options, 'dataset-text-field');
+  const datasetMessagesField = optionString(options, 'dataset-messages-field');
+  const maxSamples = assertInteger(
+    optionString(options, 'max-samples') ?? 100,
+    'max-samples',
+    1,
+    100000
+  );
+  const minSamples = assertInteger(
+    optionString(options, 'min-samples') ?? 1,
+    'min-samples',
+    1,
+    100000
+  );
+  if (minSamples > maxSamples) {
+    throw new Error('min-samples cannot exceed max-samples');
+  }
+
+  const maxTokens = assertInteger(
+    optionString(options, 'max-tokens') ?? 256,
+    'max-tokens',
+    1,
+    8192
+  );
+  const sampleBatchSize = assertInteger(
+    optionString(options, 'sample-batch-size') ?? 1,
+    'sample-batch-size',
+    1,
+    1024
+  );
+  const includeLayers = optionString(options, 'layers');
+  const renormTopK = optionBoolean(options, 'renorm-topk');
+  const layerWise = optionBoolean(options, 'layer-wise');
+  const collectMode = parseCollectMode(optionString(options, 'collect-mode'));
+  if (layerWise && collectMode === 'single_pass') {
+    throw new Error('--layer-wise conflicts with --collect-mode single_pass');
+  }
+
+  const batchSizeOption = optionString(options, 'batch-size');
+  const batchSize =
+    typeof batchSizeOption === 'string'
+      ? assertInteger(batchSizeOption, 'batch-size', 1, 8192)
+      : undefined;
+  const packSamples = optionBoolean(options, 'pack-samples');
+  const lazyLoad = optionBoolean(options, 'lazy-load');
+  const pythonBin = optionString(options, 'python');
+
+  return {
+    modelPath: base.modelPath,
+    outputDir: base.outputDir,
+    ...(prompt ? { prompt } : {}),
+    ...(datasetName ? { datasetName } : {}),
+    ...(datasetFile ? { datasetFile } : {}),
+    ...(datasetFormat ? { datasetFormat } : {}),
+    ...(datasetSplit ? { datasetSplit } : {}),
+    ...(datasetTextField ? { datasetTextField } : {}),
+    ...(datasetMessagesField ? { datasetMessagesField } : {}),
+    maxSamples,
+    minSamples,
+    maxTokens,
+    sampleBatchSize,
+    ...(includeLayers ? { includeLayers } : {}),
+    ...(renormTopK ? { renormTopK: true } : {}),
+    ...(layerWise ? { layerWise: true } : {}),
+    ...(collectMode ? { collectMode } : {}),
+    ...(typeof batchSize === 'number' ? { batchSize } : {}),
+    ...(packSamples ? { packSamples: true } : {}),
+    ...(lazyLoad ? { lazyLoad: true } : {}),
+    ...(pythonBin ? { pythonBin } : {})
+  };
+}
+
+function printTelemetryCollectionSummary(metadata: ModelTelemetry['metadata'] | undefined): void {
+  if (!metadata) {
+    return;
+  }
+
+  const stringField = (key: string, label: string) => {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.length > 0) {
+      process.stdout.write(`${label}: ${value}\n`);
+    }
+  };
+  const numberField = (key: string, label: string) => {
+    const value = metadata[key];
+    if (typeof value === 'number') {
+      process.stdout.write(`${label}: ${value}\n`);
+    }
+  };
+  const booleanField = (key: string, label: string) => {
+    const value = metadata[key];
+    if (typeof value === 'boolean') {
+      process.stdout.write(`${label}: ${value ? 'enabled' : 'disabled'}\n`);
+    }
+  };
+
+  stringField('inputMode', 'input mode');
+  stringField('dataset', 'dataset');
+  stringField('datasetFile', 'dataset file');
+  stringField('collectMode', 'collect mode');
+  numberField('scannedSamples', 'scanned samples');
+  numberField('processedSamples', 'processed samples');
+  numberField('skippedSamples', 'skipped samples');
+  numberField('modelTokenCount', 'model tokens');
+  numberField('packedSequences', 'packed sequences');
+  numberField('sampleBatches', 'sample batches');
+  booleanField('layerWise', 'layer-wise');
+  booleanField('packSamples', 'pack samples');
+  booleanField('lazyLoad', 'lazy load');
+
+  const batchSize = metadata.batchSize;
+  if (typeof batchSize === 'number' && batchSize > 0) {
+    process.stdout.write(`token batch size: ${batchSize}\n`);
+  }
+
+  const sampleBatchSize = metadata.sampleBatchSize;
+  if (typeof sampleBatchSize === 'number' && sampleBatchSize > 0) {
+    process.stdout.write(`sample batch size: ${sampleBatchSize}\n`);
+  }
 }
 
 function createRng(seedInput: number): () => number {
@@ -484,77 +687,16 @@ async function handleParity(options: CliOptions): Promise<void> {
 async function handleCollect(options: CliOptions): Promise<void> {
   const modelPath = requiredOption(options, 'model');
   const outputDir = requiredOption(options, 'output');
-  const prompt = optionString(options, 'prompt');
-  const datasetName = optionString(options, 'dataset');
-
-  if (!prompt && !datasetName) {
-    throw new Error('Missing required option --prompt or --dataset');
-  }
-
-  if (prompt && datasetName) {
-    throw new Error('Use only one of --prompt or --dataset');
-  }
-
-  const datasetSplit = optionString(options, 'dataset-split') ?? 'train';
-  const datasetTextField = optionString(options, 'dataset-text-field') ?? 'instruction';
-  const maxSamples = assertInteger(
-    optionString(options, 'max-samples') ?? 100,
-    'max-samples',
-    1,
-    100000
-  );
-  const maxTokens = assertInteger(
-    optionString(options, 'max-tokens') ?? 256,
-    'max-tokens',
-    1,
-    8192
-  );
-  const includeLayers = optionString(options, 'layers');
-  const renormTopK = optionBoolean(options, 'renorm-topk');
-  const layerWise = optionBoolean(options, 'layer-wise');
-  const batchSize = optionString(options, 'batch-size');
-  const parsedBatchSize =
-    typeof batchSize === 'string'
-      ? assertInteger(batchSize, 'batch-size', 1, 8192)
-      : undefined;
-  const pythonBin = optionString(options, 'python');
-
-  const result = await collectTelemetryWithMlx({
+  const collectConfig = buildCollectConfigFromOptions(options, {
     modelPath,
-    outputDir,
-    ...(prompt ? { prompt } : {}),
-    ...(datasetName ? { datasetName } : {}),
-    ...(datasetName ? { datasetSplit } : {}),
-    ...(datasetName ? { datasetTextField } : {}),
-    ...(datasetName ? { maxSamples } : {}),
-    maxTokens,
-    ...(includeLayers ? { includeLayers } : {}),
-    ...(renormTopK ? { renormTopK: true } : {}),
-    ...(layerWise ? { layerWise: true } : {}),
-    ...(typeof parsedBatchSize === 'number' ? { batchSize: parsedBatchSize } : {}),
-    ...(pythonBin ? { pythonBin } : {})
+    outputDir
   });
+  const result = await collectTelemetryWithMlx(collectConfig);
 
   process.stdout.write(`telemetry written: ${result.telemetryPath}\n`);
   process.stdout.write(`model: ${result.telemetry.modelName}\n`);
   process.stdout.write(`experts: ${result.telemetry.experts.length}\n`);
-
-  const metadata = result.telemetry.metadata;
-  if (metadata && typeof metadata.inputMode === 'string') {
-    process.stdout.write(`input mode: ${metadata.inputMode}\n`);
-  }
-  if (metadata && typeof metadata.processedSamples === 'number') {
-    process.stdout.write(`processed samples: ${metadata.processedSamples}\n`);
-  }
-  if (metadata && typeof metadata.promptLengthTokens === 'number') {
-    process.stdout.write(`total tokens: ${metadata.promptLengthTokens}\n`);
-  }
-  if (metadata && typeof metadata.layerWise === 'boolean') {
-    process.stdout.write(`layer-wise: ${metadata.layerWise ? 'enabled' : 'disabled'}\n`);
-  }
-  if (metadata && typeof metadata.batchSize === 'number' && metadata.batchSize > 0) {
-    process.stdout.write(`batch size: ${metadata.batchSize}\n`);
-  }
+  printTelemetryCollectionSummary(result.telemetry.metadata);
 }
 
 async function runApplyWithConfig(config: {
@@ -601,51 +743,16 @@ async function handleApply(options: CliOptions): Promise<void> {
 async function handleFull(options: CliOptions): Promise<void> {
   const modelPath = requiredOption(options, 'model');
   const outputDir = requiredOption(options, 'output');
-  const datasetName = requiredOption(options, 'dataset');
-  const datasetSplit = optionString(options, 'dataset-split') ?? 'train';
-  const datasetTextField = optionString(options, 'dataset-text-field') ?? 'instruction';
-  const maxSamples = assertInteger(
-    optionString(options, 'max-samples') ?? 100,
-    'max-samples',
-    1,
-    100000
-  );
-  const maxTokens = assertInteger(
-    optionString(options, 'max-tokens') ?? 256,
-    'max-tokens',
-    1,
-    8192
-  );
-  const includeLayers = optionString(options, 'layers');
-  const renormTopK = optionBoolean(options, 'renorm-topk');
-  const layerWise = optionBoolean(options, 'layer-wise');
-  const batchSize = optionString(options, 'batch-size');
-  const parsedBatchSize =
-    typeof batchSize === 'string'
-      ? assertInteger(batchSize, 'batch-size', 1, 8192)
-      : undefined;
-  const pythonBin = optionString(options, 'python');
+  const collectConfig = buildCollectConfigFromOptions(options, {
+    modelPath,
+    outputDir: path.resolve(outputDir, 'telemetry')
+  });
+  const pythonBin = collectConfig.pythonBin;
   const dryRun = optionBoolean(options, 'dry-run');
 
   await ensureSecureDir(outputDir);
-
-  const collectOutputDir = path.resolve(outputDir, 'telemetry');
-  await ensureSecureDir(collectOutputDir);
-
-  const collectResult = await collectTelemetryWithMlx({
-    modelPath,
-    outputDir: collectOutputDir,
-    datasetName,
-    datasetSplit,
-    datasetTextField,
-    maxSamples,
-    maxTokens,
-    ...(includeLayers ? { includeLayers } : {}),
-    ...(renormTopK ? { renormTopK: true } : {}),
-    ...(layerWise ? { layerWise: true } : {}),
-    ...(typeof parsedBatchSize === 'number' ? { batchSize: parsedBatchSize } : {}),
-    ...(pythonBin ? { pythonBin } : {})
-  });
+  await ensureSecureDir(collectConfig.outputDir);
+  const collectResult = await collectTelemetryWithMlx(collectConfig);
 
   const planOutputDir = path.resolve(outputDir, 'plan');
   await ensureSecureDir(planOutputDir);
@@ -685,17 +792,7 @@ async function handleFull(options: CliOptions): Promise<void> {
   process.stdout.write(`layers patched: ${applyResult.layersPatched}\n`);
   process.stdout.write(`experts before: ${applyResult.expertsBefore}\n`);
   process.stdout.write(`experts after: ${applyResult.expertsAfter}\n`);
-  if (typeof payload.telemetryMetadata.layerWise === 'boolean') {
-    process.stdout.write(
-      `layer-wise: ${payload.telemetryMetadata.layerWise ? 'enabled' : 'disabled'}\n`
-    );
-  }
-  if (
-    typeof payload.telemetryMetadata.batchSize === 'number' &&
-    payload.telemetryMetadata.batchSize > 0
-  ) {
-    process.stdout.write(`batch size: ${payload.telemetryMetadata.batchSize}\n`);
-  }
+  printTelemetryCollectionSummary(payload.telemetryMetadata);
 }
 
 async function handleObserve(options: CliOptions): Promise<void> {

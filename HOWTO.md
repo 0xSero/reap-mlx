@@ -17,14 +17,41 @@ Step 1: Collect routing telemetry. This runs a forward pass and records how each
 node dist/cli/index.js collect \
   --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
   --output ./tmp \
-  --prompt "Explain sparse MoE routing in one sentence." \
-  --max-tokens 64 \
+  --dataset-file ./calibration/tinystories.jsonl \
+  --dataset-format jsonl \
+  --dataset-text-field text \
+  --max-samples 1024 \
+  --min-samples 512 \
+  --max-tokens 512 \
+  --sample-batch-size 8 \
+  --pack-samples \
   --layers 0-3 \
-  --layer-wise \
-  --batch-size 128
+  --collect-mode reload_per_layer \
+  --batch-size 128 \
+  --lazy-load
 ```
 
-Use `--layer-wise` when you want each selected layer scored from its own replayed hidden state path. Use `--batch-size` when the token-by-expert scoring step needs a lower peak memory footprint.
+What those flags do:
+- `--dataset-file` accepts local `json`, `jsonl`, `csv`, `parquet`, or plain text calibration data.
+- `--dataset-text-field` selects the field path for plain text samples. If omitted, the collector tries common fields automatically.
+- `--dataset-messages-field` is for multi-turn chat rows; it renders each sample independently via the tokenizer chat template when available.
+- `--sample-batch-size` is real multi-sample mini-batching.
+- `--pack-samples` packs unrelated samples together to fill context windows more efficiently.
+- `--batch-size` lowers peak memory inside expert scoring by chunking flattened token activations.
+- `--collect-mode reload_per_layer` is the lowest-memory mode available in this repo. It re-runs one selected layer at a time and merges the telemetry afterward.
+- `--lazy-load` asks MLX to defer parameter materialization during load.
+
+If you only want replay-per-layer without a fresh model load per selected layer, use:
+
+```bash
+--layer-wise
+```
+
+or equivalently:
+
+```bash
+--collect-mode replay_per_layer
+```
 
 Step 2: Build a pruning plan. The ratio is how many experts to prune per layer (0.05 = 5%).
 
@@ -48,6 +75,29 @@ node dist/cli/index.js apply \
 ```
 
 If the dry run looks right, run it again without `--dry-run` to write the pruned model.
+
+## Calibration source rules
+
+Use exactly one of:
+- `--prompt`
+- `--dataset`
+- `--dataset-file`
+
+Important knobs:
+- `--max-samples`: hard cap on usable samples consumed
+- `--min-samples`: fail if the collector cannot find enough usable samples
+- `--max-tokens`: per-sample or per-packed-sequence token cap
+- `--sample-batch-size`: how many sequences are processed together in one model batch
+
+The collector reports:
+- scanned samples
+- processed samples
+- skipped samples
+- model tokens
+- packed sequences
+- sample batches
+
+so you can verify that calibration is doing what you think it is doing.
 
 ## Test without a model
 
