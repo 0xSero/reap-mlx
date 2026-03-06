@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import {
   applyPruningPlanToMlxModel,
   collectTelemetryWithMlx,
+  runParityHarness,
   runReapMlx,
   summarizeObservationLog
 } from '../core/index.js';
@@ -39,6 +40,7 @@ Usage:
 
 Commands:
   run       Build pruning plan from telemetry JSON
+  parity    Compare two telemetry files under one exact pruning config
   collect   Collect REAP telemetry from MLX model (prompt or dataset)
   full      Run full pipeline: collect -> run -> apply
   apply     Apply pruning plan to an MLX checkpoint
@@ -61,6 +63,21 @@ run options:
   --job-id <id>                     Optional job id
   --observation <name>              Observation filename (default: observation.log)
   --json                            Output full result as JSON
+
+parity options:
+  --left <file>                     Left telemetry JSON input file
+  --right <file>                    Right telemetry JSON input file
+  --output <dir>                    Output directory for plans + parity report
+  --ratio <0..0.95>                 Target prune ratio
+  --calibration <1..25>             Calibration rounds (default: 2)
+  --min-experts <1..128>            Minimum experts preserved per layer (default: 1)
+  --prune-method <name>             Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+  --n-experts-to-prune-per-layer <n> Prune exactly n experts per layer (bounded by layer size)
+  --preserve-super-experts          Preserve super experts from pruning mask
+  --preserve-outliers               Preserve outlier experts (include all layers)
+  --no-legacy                       Require REAP saliency fields (disable activationScore fallback)
+  --require-identical-telemetry     Exit non-zero unless normalized telemetry hashes are identical
+  --json                            Output full parity report as JSON
 
 collect options:
   --model <dir>            Local MLX model directory
@@ -408,6 +425,62 @@ async function handleRun(options: CliOptions): Promise<void> {
   process.stdout.write(`plan written: ${outputPlanPath}\n`);
 }
 
+async function handleParity(options: CliOptions): Promise<void> {
+  const leftModelPath = requiredOption(options, 'left');
+  const rightModelPath = requiredOption(options, 'right');
+  const outputDir = requiredOption(options, 'output');
+
+  await ensureFileReadable(leftModelPath);
+  await ensureFileReadable(rightModelPath);
+
+  const runConfig = buildRunConfigFromOptions(options, leftModelPath, outputDir);
+  const report = await runParityHarness({
+    leftModelPath,
+    rightModelPath,
+    outputDir,
+    ...(typeof runConfig.targetRatio === 'number' ? { targetRatio: runConfig.targetRatio } : {}),
+    ...(typeof runConfig.calibrationRounds === 'number'
+      ? { calibrationRounds: runConfig.calibrationRounds }
+      : {}),
+    ...(typeof runConfig.minExpertsPerLayer === 'number'
+      ? { minExpertsPerLayer: runConfig.minExpertsPerLayer }
+      : {}),
+    ...(runConfig.pruneMethod ? { pruneMethod: runConfig.pruneMethod } : {}),
+    ...(typeof runConfig.nExpertsToPrunePerLayer === 'number'
+      ? { nExpertsToPrunePerLayer: runConfig.nExpertsToPrunePerLayer }
+      : {}),
+    ...(runConfig.preserveSuperExperts ? { preserveSuperExperts: true } : {}),
+    ...(runConfig.preserveOutliers ? { preserveOutliers: true } : {}),
+    ...(runConfig.allowLegacySaliency === false ? { allowLegacySaliency: false } : {}),
+    ...(optionBoolean(options, 'require-identical-telemetry')
+      ? { requireIdenticalTelemetry: true }
+      : {})
+  });
+
+  if (optionBoolean(options, 'json')) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`left telemetry hash: ${report.leftTelemetry.normalizedHash}\n`);
+    process.stdout.write(`right telemetry hash: ${report.rightTelemetry.normalizedHash}\n`);
+    process.stdout.write(
+      `telemetry exact match: ${report.telemetry.normalizedHashEqual ? 'yes' : 'no'}\n`
+    );
+    process.stdout.write(`pruned exact match: ${report.pruning.prunedExactMatch ? 'yes' : 'no'}\n`);
+    process.stdout.write(`kept exact match: ${report.pruning.keptExactMatch ? 'yes' : 'no'}\n`);
+    process.stdout.write(`threshold delta: ${report.pruning.thresholdDelta}\n`);
+    process.stdout.write(`report written: ${report.artifacts.reportJsonPath}\n`);
+    process.stdout.write(`markdown written: ${report.artifacts.reportMarkdownPath}\n`);
+  }
+
+  if (optionBoolean(options, 'require-identical-telemetry') && !report.telemetry.normalizedHashEqual) {
+    throw new Error('Normalized telemetry mismatch between --left and --right');
+  }
+
+  if (!report.pruning.prunedExactMatch) {
+    throw new Error('Pruned expert mismatch between --left and --right');
+  }
+}
+
 async function handleCollect(options: CliOptions): Promise<void> {
   const modelPath = requiredOption(options, 'model');
   const outputDir = requiredOption(options, 'output');
@@ -683,6 +756,10 @@ export async function main(argv = process.argv): Promise<void> {
   switch (parsed.command) {
     case 'run': {
       await handleRun(parsed.options);
+      return;
+    }
+    case 'parity': {
+      await handleParity(parsed.options);
       return;
     }
     case 'collect': {

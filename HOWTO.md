@@ -72,6 +72,30 @@ node dist/cli/index.js run \
   --calibration 3
 ```
 
+## Exact prune parity check
+
+When you want to prove that two runs will prune the exact same experts, compare the two telemetry files under one shared prune config:
+
+```bash
+node dist/cli/index.js parity \
+  --left ./examples/telemetry.json \
+  --right ./examples/telemetry.json \
+  --output ./examples/parity \
+  --prune-method reap \
+  --n-experts-to-prune-per-layer 2 \
+  --min-experts 1 \
+  --no-legacy \
+  --require-identical-telemetry
+```
+
+This writes:
+- `./examples/parity/parity-report.json`
+- `./examples/parity/parity-report.md`
+
+and fails if either:
+- normalized telemetry differs, or
+- the pruned expert set differs.
+
 ## Inspect the observation log
 
 Every `run` writes a JSONL log with timing data for each pipeline stage.

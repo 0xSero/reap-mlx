@@ -61,6 +61,7 @@ Use `--dry-run` on `apply` to validate a plan without writing a new checkpoint.
 
 - `collect`: runs one forward pass and saves per-expert routing + activation stats.
 - `run`: scores experts from telemetry and writes `pruning-plan.json`.
+- `parity`: runs the same prune config against two telemetry files and diffs the exact prune set.
 - `apply`: physically removes pruned experts from the MLX checkpoint.
 - `observe`: summarizes run observation logs.
 - `init`: creates synthetic telemetry for local testing.
@@ -131,6 +132,31 @@ This is the REAP-style scoring used for pruning decisions in this project.
 --no-legacy         Disable fallback saliency fields
 --json              Print plan JSON to stdout
 ```
+
+### parity
+
+```text
+--left <file>                      Left telemetry JSON
+--right <file>                     Right telemetry JSON
+--output <dir>                     Output directory for left/right plans + parity report
+--ratio <0..0.95>                  Target prune ratio per layer
+--n-experts-to-prune-per-layer <n> Prune exactly n experts per layer
+--prune-method <name>              reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+--require-identical-telemetry      Fail unless normalized telemetry hashes match exactly
+--json                             Print parity report JSON to stdout
+```
+
+Use `parity` when the question is:
+
+```text
+same exact telemetry + same prune config => same exact experts pruned?
+```
+
+It writes `parity-report.json` and `parity-report.md` with:
+- normalized telemetry hashes
+- first differing expert row
+- exact prune-set diff
+- per-layer expert deltas
 
 ### apply
 

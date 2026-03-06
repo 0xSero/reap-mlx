@@ -28,8 +28,10 @@ describe('cli', () => {
 
     const helpResult = await execFileAsync('node', [path.join(root, 'dist/cli/index.js'), 'help']);
 
+    expect(helpResult.stdout).toContain('parity');
     expect(helpResult.stdout).toContain('--layer-wise');
     expect(helpResult.stdout).toContain('--batch-size <1..8192>');
+    expect(helpResult.stdout).toContain('--require-identical-telemetry');
   });
 
   it('initializes telemetry then runs and observes it', async () => {

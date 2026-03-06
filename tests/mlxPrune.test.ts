@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,6 +6,10 @@ import { applyPruningPlanToMlxModel } from '../src/core/index.js';
 import { writeJsonAtomicSafe } from '../src/core/security.js';
 
 const createdDirs: string[] = [];
+const DRY_RUN_MODEL_PATH =
+  process.env.REAP_MLX_TEST_MODEL_PATH ??
+  '/Users/sero/projects/quantforge/models/qwen1.5-moe-a2.7b-chat-4bit';
+const HAS_DRY_RUN_MODEL = existsSync(DRY_RUN_MODEL_PATH);
 
 async function createTempDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'reap-mlx-apply-test-'));
@@ -22,7 +26,7 @@ afterEach(async () => {
 });
 
 describe('applyPruningPlanToMlxModel', () => {
-  it(
+  it.skipIf(!HAS_DRY_RUN_MODEL)(
     'supports dry-run validation path',
     async () => {
       const tempDir = await createTempDir();
@@ -89,7 +93,7 @@ describe('applyPruningPlanToMlxModel', () => {
       });
 
       const result = await applyPruningPlanToMlxModel({
-        modelPath: '/Users/sero/projects/quantforge/models/qwen1.5-moe-a2.7b-chat-4bit',
+        modelPath: DRY_RUN_MODEL_PATH,
         planPath,
         outputDir: path.join(tempDir, 'out'),
         dryRun: true
