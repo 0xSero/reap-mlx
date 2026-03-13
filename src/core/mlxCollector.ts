@@ -259,6 +259,50 @@ def get_pad_token_id(tokenizer):
     return 0
 
 
+def resolve_layers(model):
+    language_model = getattr(model, 'language_model', None)
+    if language_model is not None:
+        nested_model = getattr(language_model, 'model', None)
+        nested_layers = getattr(nested_model, 'layers', None) if nested_model is not None else None
+        if nested_layers is not None:
+            return nested_layers
+
+    nested_model = getattr(model, 'model', None)
+    nested_layers = getattr(nested_model, 'layers', None) if nested_model is not None else None
+    if nested_layers is not None:
+        return nested_layers
+
+    top_level_layers = getattr(model, 'layers', None)
+    if top_level_layers is not None:
+        return top_level_layers
+
+    raise RuntimeError(
+        f'Unable to resolve transformer layers from model type={type(model).__name__}'
+    )
+
+
+def resolve_embed_tokens(model):
+    language_model = getattr(model, 'language_model', None)
+    if language_model is not None:
+        nested_model = getattr(language_model, 'model', None)
+        embed_tokens = getattr(nested_model, 'embed_tokens', None) if nested_model is not None else None
+        if embed_tokens is not None:
+            return embed_tokens
+
+    nested_model = getattr(model, 'model', None)
+    embed_tokens = getattr(nested_model, 'embed_tokens', None) if nested_model is not None else None
+    if embed_tokens is not None:
+        return embed_tokens
+
+    top_level_embed_tokens = getattr(model, 'embed_tokens', None)
+    if top_level_embed_tokens is not None:
+        return top_level_embed_tokens
+
+    raise RuntimeError(
+        f'Unable to resolve text embedding weights from model type={type(model).__name__}'
+    )
+
+
 def iter_token_samples(args, tokenizer, counters):
     max_samples = int(args.max_samples) if args.max_samples is not None else 100
     min_samples = int(args.min_samples) if args.min_samples is not None else 1
@@ -548,7 +592,7 @@ def main():
     else:
         input_mode = 'dataset'
 
-    layers = model.model.layers
+    layers = resolve_layers(model)
     num_layers = len(layers)
     selected_layers = parse_layers(args.layers if args.layers else None, num_layers)
     selected_layer_set = set(selected_layers)
@@ -565,13 +609,14 @@ def main():
     }
 
     pad_token_id = get_pad_token_id(tokenizer)
+    embed_tokens = resolve_embed_tokens(model)
 
     for sequences in iter_sequence_batches(args, tokenizer, counters):
         padded, valid = pad_batch(sequences, pad_token_id)
         x = mx.array(padded)
         valid_mask = mx.array(valid)
 
-        hidden = model.model.embed_tokens(x)
+        hidden = embed_tokens(x)
 
         mask = None
         if x.shape[1] > 1:

@@ -36,6 +36,28 @@ from mlx_lm import load
 from mlx_lm.utils import save_model
 
 
+def resolve_layers(model):
+    language_model = getattr(model, 'language_model', None)
+    if language_model is not None:
+        nested_model = getattr(language_model, 'model', None)
+        nested_layers = getattr(nested_model, 'layers', None) if nested_model is not None else None
+        if nested_layers is not None:
+            return nested_layers
+
+    nested_model = getattr(model, 'model', None)
+    nested_layers = getattr(nested_model, 'layers', None) if nested_model is not None else None
+    if nested_layers is not None:
+        return nested_layers
+
+    top_level_layers = getattr(model, 'layers', None)
+    if top_level_layers is not None:
+        return top_level_layers
+
+    raise RuntimeError(
+        f'Unable to resolve transformer layers from model type={type(model).__name__}'
+    )
+
+
 def parse_keep_map(plan):
     keep_map = {}
     kept = plan.get('kept', [])
@@ -109,7 +131,7 @@ def main():
 
     model, tokenizer = load(str(model_path), lazy=False)
 
-    layers = model.model.layers
+    layers = resolve_layers(model)
     num_layers = len(layers)
 
     patched_layers = []
@@ -244,6 +266,10 @@ function parseResult(stdout: string): MlxApplyPlanResult {
     pruningPlanJobId: String(payload.pruningPlanJobId ?? 'unknown')
   };
 }
+
+export const __testOnly = {
+  pythonScript
+};
 
 export async function applyPruningPlanToMlxModel(
   config: MlxApplyPlanConfig
