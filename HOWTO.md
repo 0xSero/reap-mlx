@@ -2,6 +2,11 @@
 
 End-to-end walkthrough: build the tool, prune a model, inspect the results.
 
+Upstream references:
+- Paper: https://arxiv.org/abs/2510.13999
+- Original Cerebras REAP repo: https://github.com/CerebrasResearch/reap
+- Local upstream submodule checkout: `external/cerebras-reap`
+
 ## Build
 
 ```bash

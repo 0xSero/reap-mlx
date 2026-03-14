@@ -10,6 +10,14 @@ collect telemetry -> build a pruning plan -> apply the plan
 
 This repo ports the pruning side of [Cerebras REAP](https://github.com/CerebrasResearch/reap) to local MLX workflows. It is built for people who want to calibrate on real data, inspect the telemetry, and physically write a smaller MLX checkpoint.
 
+## upstream links
+
+- Paper: https://arxiv.org/abs/2510.13999
+- Original Cerebras REAP repo: https://github.com/CerebrasResearch/reap
+- Vendored upstream submodule in this repo: `external/cerebras-reap`
+
+The submodule is there so you can diff local MLX work against the upstream research implementation without leaving the repo.
+
 ## what it does today
 
 - Collects per-expert telemetry from an MLX MoE model.
@@ -362,7 +370,7 @@ This is the cleanest correctness check in the repo. If telemetry is identical an
 - The repo has planner tests, collector wiring tests, and an exact parity harness.
 - The repo still does not include a built-in benchmark suite for pruned versus unpruned models.
 
-If you want a broader research stack, including full evaluation workflows and other compression paths, use the upstream Cerebras repo.
+If you want a broader research stack, including full evaluation workflows and other compression paths, use the upstream Cerebras repo. A checked-out copy now lives in this repo at `external/cerebras-reap`.
 
 ## development
 

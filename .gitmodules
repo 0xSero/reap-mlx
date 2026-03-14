@@ -1,0 +1,3 @@
+[submodule "external/cerebras-reap"]
+	path = external/cerebras-reap
+	url = https://github.com/CerebrasResearch/reap
