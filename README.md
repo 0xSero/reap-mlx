@@ -117,6 +117,41 @@ Useful controls:
 
 That means you are not stuck with one-off prompts. You can hand the collector a real dataset and bound both sample count and per-sample length.
 
+## paper-aligned calibration guidance
+
+If you want `reap-mlx` to track the published REAP paper more closely, use the paper's calibration standards as your baseline instead of inventing larger sample counts by default.
+
+- For models with `<= 110B` parameters, the paper calibrates on **1,024 randomly selected samples** packed to **2,048 tokens**.
+- For models with `>= 110B` parameters, the paper uses **12,228 samples** with a maximum sequence length of **16,384 tokens** and no packing.
+- The paper shows that **domain-specific calibration matters a lot**. In particular, coding models calibrated on `c4` can degrade badly, while `evol-codealpaca` preserves coding quality much better.
+
+Recommended dataset choices from the paper:
+
+- coding: `theblackcat102/evol-codealpaca-v1`
+- creative writing: `euclaise/WritingPrompts_curated`
+- math: `allenai/tulu-3-sft-personas-math`
+- larger tool-use / agentic mixes: add `Salesforce/xlam-function-calling-60k` and `SWE-bench/SWE-smith-trajectories`
+
+For local Apple Silicon workflows, the most practical paper-aligned baseline is the `<= 110B` recipe:
+
+```bash
+node dist/cli/index.js collect \
+  --model ./models/qwen1.5-moe-a2.7b-chat-4bit \
+  --output ./tmp/paper-coding \
+  --dataset theblackcat102/evol-codealpaca-v1 \
+  --dataset-split train \
+  --max-samples 1024 \
+  --min-samples 1024 \
+  --max-tokens 2048 \
+  --pack-samples \
+  --renorm-topk \
+  --collect-mode reload_per_layer \
+  --batch-size 128 \
+  --lazy-load
+```
+
+Do **not** treat `20k` as a paper-backed default. If you want to test `20k`, treat it as an experiment and compare it against the paper-backed `1,024` sample baseline on your actual eval suite.
+
 ## batching and memory modes
 
 There are three different knobs here, and they are not the same thing.

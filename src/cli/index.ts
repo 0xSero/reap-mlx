@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import {
   applyPruningPlanToMlxModel,
   collectTelemetryWithMlx,
+  probeMlxModelCoherence,
   runParityHarness,
   runReapMlx,
   summarizeObservationLog
@@ -50,6 +51,7 @@ Commands:
   collect   Collect REAP telemetry from MLX model (prompt or dataset)
   full      Run full pipeline: collect -> run -> apply
   apply     Apply pruning plan to an MLX checkpoint
+  probe     Prompt an MLX model and print the completion
   observe   Summarize observation log
   init      Generate synthetic telemetry JSON
   help      Show this help
@@ -97,7 +99,7 @@ collect options:
   --dataset-messages-field <f> Field path for chat messages array
   --max-samples <n>        Max dataset samples to aggregate (default: 100)
   --min-samples <n>        Require at least n usable samples (default: 1)
-  --max-tokens <1..8192>   Per-sample token cap (default: 256)
+  --max-tokens <1..16384>  Per-sample token cap (default: 256)
   --sample-batch-size <1..1024> Batch multiple samples/conversations together
   --pack-samples           Pack multiple independent samples into max-tokens windows
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
@@ -120,7 +122,7 @@ full options:
   --dataset-messages-field <f> Field path for chat messages array
   --max-samples <n>        Max dataset samples to aggregate (default: 100)
   --min-samples <n>        Require at least n usable samples (default: 1)
-  --max-tokens <1..8192>   Per-sample token cap (default: 256)
+  --max-tokens <1..16384>  Per-sample token cap (default: 256)
   --sample-batch-size <1..1024> Batch multiple samples/conversations together
   --pack-samples           Pack multiple independent samples into max-tokens windows
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
@@ -146,6 +148,13 @@ apply options:
   --output <dir>           Output pruned model directory
   --python <bin>           Python binary (default: python3)
   --dry-run                Validate and simulate patch without writing model
+
+probe options:
+  --model <dir>            MLX model directory to prompt
+  --prompt <text>          Prompt text for a quick coherence check
+  --max-tokens <1..4096>   Generation cap (default: 80)
+  --temperature <0..5>     Sampling temperature (default: 0.2)
+  --python <bin>           Python binary (default: python3)
 
 observe options:
   --file <path>            Observation log file
@@ -341,7 +350,7 @@ function buildCollectConfigFromOptions(options: CliOptions, base: {
     optionString(options, 'max-tokens') ?? 256,
     'max-tokens',
     1,
-    8192
+    16384
   );
   const sampleBatchSize = assertInteger(
     optionString(options, 'sample-batch-size') ?? 1,
@@ -740,6 +749,24 @@ async function handleApply(options: CliOptions): Promise<void> {
   process.stdout.write(`plan job id: ${result.pruningPlanJobId}\n`);
 }
 
+async function handleProbe(options: CliOptions): Promise<void> {
+  const modelPath = requiredOption(options, 'model');
+  const prompt = requiredOption(options, 'prompt');
+  const pythonBin = optionString(options, 'python');
+  const maxTokens = assertInteger(optionString(options, 'max-tokens') ?? 80, 'max-tokens', 1, 4096);
+  const temperature = assertFiniteNumber(optionString(options, 'temperature') ?? 0.2, 'temperature', 0, 5);
+
+  const result = await probeMlxModelCoherence({
+    modelPath,
+    prompt,
+    ...(pythonBin ? { pythonBin } : {}),
+    maxTokens,
+    temperature
+  });
+
+  process.stdout.write(`${result.completion.trim()}\n`);
+}
+
 async function handleFull(options: CliOptions): Promise<void> {
   const modelPath = requiredOption(options, 'model');
   const outputDir = requiredOption(options, 'output');
@@ -869,6 +896,10 @@ export async function main(argv = process.argv): Promise<void> {
     }
     case 'apply': {
       await handleApply(parsed.options);
+      return;
+    }
+    case 'probe': {
+      await handleProbe(parsed.options);
       return;
     }
     case 'observe': {

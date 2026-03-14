@@ -847,7 +847,7 @@ function normalizeDatasetFormat(value: DatasetFormat | undefined): DatasetFormat
 export function buildMlxCollectArgs(config: MlxCollectConfig, telemetryPath: string): string[] {
   assertSingleInputSource(config);
 
-  const maxTokens = assertInteger(config.maxTokens ?? 256, 'maxTokens', 1, 8192);
+  const maxTokens = assertInteger(config.maxTokens ?? 256, 'maxTokens', 1, 16384);
   const maxSamples = assertInteger(config.maxSamples ?? 100, 'maxSamples', 1, 100_000);
   const minSamples = assertInteger(config.minSamples ?? 1, 'minSamples', 1, 100_000);
   const batchSize =

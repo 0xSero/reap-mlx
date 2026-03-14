@@ -31,12 +31,15 @@ describe('cli', () => {
     expect(helpResult.stdout).toContain('parity');
     expect(helpResult.stdout).toContain('--layer-wise');
     expect(helpResult.stdout).toContain('--batch-size <1..8192>');
+    expect(helpResult.stdout).toContain('--max-tokens <1..16384>');
     expect(helpResult.stdout).toContain('--dataset-file <path>');
     expect(helpResult.stdout).toContain('--sample-batch-size <1..1024>');
     expect(helpResult.stdout).toContain('--pack-samples');
     expect(helpResult.stdout).toContain('--collect-mode <name>');
     expect(helpResult.stdout).toContain('--lazy-load');
     expect(helpResult.stdout).toContain('--require-identical-telemetry');
+    expect(helpResult.stdout).toContain('probe');
+    expect(helpResult.stdout).toContain('--temperature <0..5>');
   });
 
   it('initializes telemetry then runs and observes it', async () => {
@@ -136,6 +139,29 @@ describe('cli', () => {
       ])
     ).rejects.toMatchObject({
       stderr: expect.stringContaining('batch-size')
+    });
+  });
+
+  it('validates collect --max-tokens upper bound', async () => {
+    const tempDir = await createTempDir();
+    const outputDir = path.join(tempDir, 'collect-out');
+    const root = path.resolve(__dirname, '..');
+
+    await expect(
+      execFileAsync('node', [
+        path.join(root, 'dist/cli/index.js'),
+        'collect',
+        '--model',
+        '/tmp/model-not-used',
+        '--output',
+        outputDir,
+        '--prompt',
+        'hello',
+        '--max-tokens',
+        '16385'
+      ])
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('max-tokens')
     });
   });
 
