@@ -201,10 +201,19 @@ Use this when collection is running hot on memory.
 This project supports:
 
 - `reap`
+- `reap_l2`
 - `frequency`
+- `weighted_frequency_sum`
 - `ean_sum`
 - `ean_mean`
+- `ean_ca`
 - `weighted_ean_sum`
+- `weighted_ean_sum_l2`
+- `max_activations`
+
+Notes:
+- `weighted_frequency_sum` maps to weighted routing-frequency totals (`weightedExpertFrequencySum`, with `gateValueSum` fallback for local collector telemetry).
+- `ean_ca`, `weighted_ean_sum_l2`, and `reap_l2` can require richer telemetry fields when you ingest data produced outside the local collector.
 
 The REAP-style score used here is:
 
@@ -331,7 +340,7 @@ This is the cleanest correctness check in the repo. If telemetry is identical an
 --output <dir>                   Output directory for left/right plans and parity report
 --ratio <0..0.95>                Target prune ratio per layer
 --n-experts-to-prune-per-layer <n>
---prune-method <name>            reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+--prune-method <name>            reap|reap_l2|frequency|weighted_frequency_sum|ean_sum|ean_mean|ean_ca|weighted_ean_sum|weighted_ean_sum_l2|max_activations
 --require-identical-telemetry    Fail unless normalized telemetry hashes match exactly
 --json                           Print parity report JSON to stdout
 ```

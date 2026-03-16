@@ -12,10 +12,15 @@ export type ObservationLevel = 'info' | 'warn' | 'error';
 
 export type PruneMethod =
   | 'reap'
+  | 'reap_l2'
   | 'frequency'
+  | 'weighted_frequency_sum'
   | 'ean_sum'
   | 'ean_mean'
-  | 'weighted_ean_sum';
+  | 'ean_ca'
+  | 'weighted_ean_sum'
+  | 'weighted_ean_sum_l2'
+  | 'max_activations';
 
 export interface ExpertSignal {
   layer: number;
@@ -26,13 +31,17 @@ export interface ExpertSignal {
   averageGateValue?: number;
   averageActivationNorm?: number;
   gateValueSum?: number;
+  weightedExpertFrequencySum?: number;
   activationNormSum?: number;
   weightedActivationNormSum?: number;
   frequency?: number;
   eanSum?: number;
   eanMean?: number;
+  eanCa?: number;
   weightedEanSum?: number;
+  weightedEanSumL2?: number;
   reap?: number;
+  reapL2?: number;
   maxActivation?: number;
   maxActivationNorm?: number;
 }
@@ -56,10 +65,15 @@ export type DecisionReason =
 
 export type SaliencySource =
   | 'reap'
+  | 'reap_l2'
   | 'frequency'
+  | 'weighted_frequency_sum'
   | 'ean_sum'
   | 'ean_mean'
+  | 'ean_ca'
   | 'weighted_ean_sum'
+  | 'weighted_ean_sum_l2'
+  | 'max_activations'
   | 'weighted_activation_sum'
   | 'mean_gate_x_norm'
   | 'mean_gate_x_norm_from_sums'

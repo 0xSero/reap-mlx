@@ -38,6 +38,8 @@ describe('cli', () => {
     expect(helpResult.stdout).toContain('--collect-mode <name>');
     expect(helpResult.stdout).toContain('--lazy-load');
     expect(helpResult.stdout).toContain('--require-identical-telemetry');
+    expect(helpResult.stdout).toContain('weighted_frequency_sum');
+    expect(helpResult.stdout).toContain('max_activations');
     expect(helpResult.stdout).toContain('probe');
     expect(helpResult.stdout).toContain('--temperature <0..5>');
   });

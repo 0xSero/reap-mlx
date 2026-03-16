@@ -63,7 +63,7 @@ run options:
   --ratio <0..0.95>                 Target prune ratio
   --calibration <1..25>             Calibration rounds (default: 2)
   --min-experts <1..128>            Minimum experts preserved per layer (default: 1)
-  --prune-method <name>             Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+  --prune-method <name>             Pruning metric: reap|reap_l2|frequency|weighted_frequency_sum|ean_sum|ean_mean|ean_ca|weighted_ean_sum|weighted_ean_sum_l2|max_activations
   --n-experts-to-prune-per-layer <n> Prune exactly n experts per layer (bounded by layer size)
   --preserve-super-experts          Preserve super experts from pruning mask
   --preserve-outliers               Preserve outlier experts (include all layers)
@@ -79,7 +79,7 @@ parity options:
   --ratio <0..0.95>                 Target prune ratio
   --calibration <1..25>             Calibration rounds (default: 2)
   --min-experts <1..128>            Minimum experts preserved per layer (default: 1)
-  --prune-method <name>             Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+  --prune-method <name>             Pruning metric: reap|reap_l2|frequency|weighted_frequency_sum|ean_sum|ean_mean|ean_ca|weighted_ean_sum|weighted_ean_sum_l2|max_activations
   --n-experts-to-prune-per-layer <n> Prune exactly n experts per layer (bounded by layer size)
   --preserve-super-experts          Preserve super experts from pruning mask
   --preserve-outliers               Preserve outlier experts (include all layers)
@@ -133,7 +133,7 @@ full options:
   --lazy-load              Ask MLX to lazily materialize weights during load
   --ratio <0..0.95>        Target prune ratio (default: 0.5)
   --min-experts <1..128>   Minimum experts preserved per layer (default: 1)
-  --prune-method <name>    Pruning metric: reap|frequency|ean_sum|ean_mean|weighted_ean_sum
+  --prune-method <name>    Pruning metric: reap|reap_l2|frequency|weighted_frequency_sum|ean_sum|ean_mean|ean_ca|weighted_ean_sum|weighted_ean_sum_l2|max_activations
   --n-experts-to-prune-per-layer <n> Prune exactly n experts per layer
   --preserve-super-experts Preserve super experts from pruning mask
   --preserve-outliers      Preserve outlier experts (include all layers)
@@ -254,15 +254,20 @@ function parsePruneMethod(value: string | undefined): PruneMethod | undefined {
   const normalized = value.trim().toLowerCase();
   const allowed = new Set<PruneMethod>([
     'reap',
+    'reap_l2',
     'frequency',
+    'weighted_frequency_sum',
     'ean_sum',
     'ean_mean',
-    'weighted_ean_sum'
+    'ean_ca',
+    'weighted_ean_sum',
+    'weighted_ean_sum_l2',
+    'max_activations'
   ]);
 
   if (!allowed.has(normalized as PruneMethod)) {
     throw new Error(
-      `Invalid --prune-method value: ${value}. Expected one of reap, frequency, ean_sum, ean_mean, weighted_ean_sum`
+      `Invalid --prune-method value: ${value}. Expected one of reap, reap_l2, frequency, weighted_frequency_sum, ean_sum, ean_mean, ean_ca, weighted_ean_sum, weighted_ean_sum_l2, max_activations`
     );
   }
 

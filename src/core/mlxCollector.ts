@@ -682,6 +682,7 @@ def main():
                 'activeTokenCount': active,
                 'tokenCount': active,
                 'gateValueSum': round(float(entry['gateValueSum']), 8),
+                'weightedExpertFrequencySum': round(float(entry['gateValueSum']), 8),
                 'activationNormSum': round(float(entry['activationNormSum']), 8),
                 'weightedActivationNormSum': round(float(entry['weightedActivationNormSum']), 8),
                 'averageGateValue': round(float(entry['gateValueSum']) / denom, 8),

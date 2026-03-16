@@ -64,6 +64,57 @@ describe('reap components saliency', () => {
       )
     ).toThrow(/Missing saliency fields/i);
   });
+
+  it('supports upstream-style extra prune methods without affecting core ordering', () => {
+    const baseExperts = [
+      {
+        layer: 0,
+        expert: 0,
+        frequency: 10,
+        weightedExpertFrequencySum: 10,
+        eanSum: 10,
+        eanMean: 1,
+        eanCa: 10,
+        weightedEanSum: 10,
+        weightedEanSumL2: 10,
+        reap: 1,
+        reapL2: 1,
+        maxActivation: 10
+      },
+      {
+        layer: 0,
+        expert: 1,
+        frequency: 5,
+        weightedExpertFrequencySum: 5,
+        eanSum: 5,
+        eanMean: 0.5,
+        eanCa: 5,
+        weightedEanSum: 5,
+        weightedEanSumL2: 5,
+        reap: 0.5,
+        reapL2: 0.5,
+        maxActivation: 5
+      }
+    ];
+
+    const methods = [
+      'reap_l2',
+      'weighted_frequency_sum',
+      'ean_ca',
+      'weighted_ean_sum_l2',
+      'max_activations'
+    ] as const;
+
+    for (const pruneMethod of methods) {
+      const scored = components.scoreSaliency(baseExperts, {
+        allowLegacySaliency: false,
+        pruneMethod
+      });
+
+      expect(scored.scoredExperts[0]?.expert).toBe(1);
+      expect(scored.scoredExperts[1]?.expert).toBe(0);
+    }
+  });
 });
 
 describe('reap components planning', () => {

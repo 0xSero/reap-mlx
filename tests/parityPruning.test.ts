@@ -26,19 +26,28 @@ interface TelemetryRow {
   layer: number;
   expert: number;
   frequency: number;
+  weightedFrequencySum: number;
   eanSum: number;
   eanMean: number;
+  eanCa: number;
   weightedEanSum: number;
+  weightedEanSumL2: number;
   reap: number;
+  reapL2: number;
   maxActivation: number;
 }
 
 const PRUNE_METHODS: PruneMethod[] = [
   'reap',
+  'reap_l2',
   'frequency',
+  'weighted_frequency_sum',
   'ean_sum',
   'ean_mean',
-  'weighted_ean_sum'
+  'ean_ca',
+  'weighted_ean_sum',
+  'weighted_ean_sum_l2',
+  'max_activations'
 ];
 
 function toSet(rows: ReadonlyArray<{ layer: number; expert: number }>): Set<string> {
@@ -122,6 +131,10 @@ function metricValue(row: TelemetryRow, method: PruneMethod): number {
     return row.frequency;
   }
 
+  if (method === 'weighted_frequency_sum') {
+    return row.weightedFrequencySum;
+  }
+
   if (method === 'ean_sum') {
     return row.eanSum;
   }
@@ -130,8 +143,24 @@ function metricValue(row: TelemetryRow, method: PruneMethod): number {
     return row.eanMean;
   }
 
+  if (method === 'ean_ca') {
+    return row.eanCa;
+  }
+
   if (method === 'weighted_ean_sum') {
     return row.weightedEanSum;
+  }
+
+  if (method === 'weighted_ean_sum_l2') {
+    return row.weightedEanSumL2;
+  }
+
+  if (method === 'reap_l2') {
+    return row.reapL2;
+  }
+
+  if (method === 'max_activations') {
+    return row.maxActivation;
   }
 
   return row.reap;
@@ -210,10 +239,14 @@ function telemetryToExpertSignals(rows: TelemetryRow[]): ExpertSignal[] {
     layer: row.layer,
     expert: row.expert,
     frequency: row.frequency,
+    weightedExpertFrequencySum: row.weightedFrequencySum,
     eanSum: row.eanSum,
     eanMean: row.eanMean,
+    eanCa: row.eanCa,
     weightedEanSum: row.weightedEanSum,
+    weightedEanSumL2: row.weightedEanSumL2,
     reap: row.reap,
+    reapL2: row.reapL2,
     maxActivation: row.maxActivation,
     tokenCount: 100,
     activeTokenCount: 100
@@ -258,7 +291,7 @@ async function actualPrunedSet(
 }
 
 function syntheticTelemetry(): TelemetryRow[] {
-  return [
+  const base = [
     { layer: 0, expert: 0, frequency: 5, eanSum: 30, eanMean: 3, weightedEanSum: 7, reap: 0.40, maxActivation: 4 },
     { layer: 0, expert: 1, frequency: 2, eanSum: 10, eanMean: 1, weightedEanSum: 2, reap: 0.10, maxActivation: 60 },
     { layer: 0, expert: 2, frequency: 8, eanSum: 40, eanMean: 4, weightedEanSum: 11, reap: 0.80, maxActivation: 6 },
@@ -279,6 +312,14 @@ function syntheticTelemetry(): TelemetryRow[] {
     { layer: 3, expert: 2, frequency: 3, eanSum: 14, eanMean: 1.4, weightedEanSum: 4, reap: 0.19, maxActivation: 16 },
     { layer: 3, expert: 3, frequency: 5, eanSum: 24, eanMean: 2.4, weightedEanSum: 6, reap: 0.29, maxActivation: 14 }
   ];
+
+  return base.map((row) => ({
+    ...row,
+    weightedFrequencySum: row.frequency,
+    eanCa: row.eanSum,
+    weightedEanSumL2: row.weightedEanSum,
+    reapL2: row.reap
+  }));
 }
 
 describe('Cerebras parity pruning selection', () => {
