@@ -908,7 +908,7 @@ export function buildMlxCollectArgs(config: MlxCollectConfig, telemetryPath: str
     String(sampleBatchSize),
     '--layers',
     config.includeLayers ?? '',
-    ...(config.renormTopK ? ['--renorm-topk'] : []),
+    ...(config.renormTopK !== false ? ['--renorm-topk'] : []),
     ...(config.layerWise || resolvedCollectMode === 'replay_per_layer' ? ['--layer-wise'] : []),
     '--collect-mode',
     processCollectMode,

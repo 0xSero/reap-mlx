@@ -103,7 +103,7 @@ collect options:
   --sample-batch-size <1..1024> Batch multiple samples/conversations together
   --pack-samples           Pack multiple independent samples into max-tokens windows
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
-  --renorm-topk            Renormalize top-k gate weights to sum to 1
+  --no-renorm-topk         Disable top-k gate weight renormalization (on by default)
   --layer-wise             Enable layer-wise collection mode
   --collect-mode <name>    single_pass|replay_per_layer|reload_per_layer
   --batch-size <1..8192>   Token chunk size for collection batching
@@ -126,7 +126,7 @@ full options:
   --sample-batch-size <1..1024> Batch multiple samples/conversations together
   --pack-samples           Pack multiple independent samples into max-tokens windows
   --layers <spec>          Optional layer filter (e.g. 0-3,8,10)
-  --renorm-topk            Renormalize top-k gate weights to sum to 1
+  --no-renorm-topk         Disable top-k gate weight renormalization (on by default)
   --layer-wise             Enable layer-wise collection mode
   --collect-mode <name>    single_pass|replay_per_layer|reload_per_layer
   --batch-size <1..8192>   Token chunk size for collection batching
@@ -364,7 +364,7 @@ function buildCollectConfigFromOptions(options: CliOptions, base: {
     1024
   );
   const includeLayers = optionString(options, 'layers');
-  const renormTopK = optionBoolean(options, 'renorm-topk');
+  const renormTopK = !optionBoolean(options, 'no-renorm-topk');
   const layerWise = optionBoolean(options, 'layer-wise');
   const collectMode = parseCollectMode(optionString(options, 'collect-mode'));
   if (layerWise && collectMode === 'single_pass') {
@@ -395,7 +395,7 @@ function buildCollectConfigFromOptions(options: CliOptions, base: {
     maxTokens,
     sampleBatchSize,
     ...(includeLayers ? { includeLayers } : {}),
-    ...(renormTopK ? { renormTopK: true } : {}),
+    renormTopK,
     ...(layerWise ? { layerWise: true } : {}),
     ...(collectMode ? { collectMode } : {}),
     ...(typeof batchSize === 'number' ? { batchSize } : {}),
