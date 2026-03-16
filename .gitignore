@@ -5,3 +5,7 @@ coverage/
 .DS_Store
 *.log
 *.tmp
+
+# local run artifacts
+work/
+test-output/
