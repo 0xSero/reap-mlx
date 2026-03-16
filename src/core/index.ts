@@ -3,6 +3,11 @@ export { runReapMlx } from './reapMlx.js';
 export { runParityHarness, type ParityHarnessConfig, type ParityReport } from './parityHarness.js';
 export { collectTelemetryWithMlx, type MlxCollectConfig } from './mlxCollector.js';
 export {
+  probeMlxModelCoherence,
+  type MlxCoherenceProbeConfig,
+  type MlxCoherenceProbeResult
+} from './mlxProbe.js';
+export {
   applyPruningPlanToMlxModel,
   deriveOutputPlanPath,
   type MlxApplyPlanConfig,
